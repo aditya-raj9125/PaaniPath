@@ -1,0 +1,1 @@
+{"name":"@paanipath/api","version":"1.0.0","private":true,"type":"module","dependencies":{"@paanipath/domain":"1.0.0","@paanipath/routing":"1.0.0","@paanipath/data":"1.0.0"}}
