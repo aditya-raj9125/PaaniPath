@@ -27,8 +27,16 @@ function anchors(text) {
   return result;
 }
 let links = 0;
+let diagrams = 0;
 for (const [file, text] of content) {
   anchors(text);
+  // Conservative authoring guard, not a full Mermaid parser: raw semicolons
+  // can terminate sequence statements instead of remaining message text.
+  const diagramPattern = new RegExp(`${marker}mermaid\\r?\\n([\\s\\S]*?)${marker}`, 'g');
+  for (const match of text.matchAll(diagramPattern)) {
+    assert(!match[1].includes(';'), `Use commas/words instead of raw semicolons in Mermaid text: ${relative(root, file)}`);
+    diagrams++;
+  }
   assert(!text.includes('docs/DEPLOYMENT.md'), 'Do not link an ignored deployment guide from public docs.');
   for (const match of text.matchAll(/\]\(([^\s)]+)\)/g)) {
     const link = match[1];
@@ -44,4 +52,4 @@ for (const [file, text] of content) {
     links++;
   }
 }
-console.log(`Documentation passed: README, three public docs, ${links} local links and heading targets.`);
+console.log(`Documentation passed: README, three public docs, ${links} local links and heading targets; ${diagrams} Mermaid text guards passed (not full rendering validation).`);

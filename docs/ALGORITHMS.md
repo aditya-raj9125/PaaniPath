@@ -78,7 +78,7 @@ flowchart TD
   Avoid --> Detours
   Detours --> Budget[Filter by minimum baseline detour budget]
   Budget --> Score[Unique report exposure and lexicographic sort]
-  Score --> Select[Deduplicate; best two plus baseline]
+  Score --> Select[Deduplicate and select best two plus baseline]
   Select --> Return
 ```
 
@@ -193,12 +193,12 @@ sequenceDiagram
   participant S as Store
   A->>S: Read revision r
   B->>S: Read revision r
-  A->>S: CAS expected r; save r+1
+  A->>S: CAS expected r, save r+1
   S-->>A: Success
-  B->>S: CAS expected r; save r+1
+  B->>S: CAS expected r, save r+1
   S-->>B: Conflict
-  B->>S: Reread r+1; reapply validation/transform
-  B->>S: CAS expected r+1; save r+2
+  B->>S: Reread r+1 and reapply validation/transform
+  B->>S: CAS expected r+1, save r+2
   S-->>B: Success or bounded retry
 ```
 

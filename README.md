@@ -102,12 +102,12 @@ sequenceDiagram
   U->>A: 2–4 stops, vehicle, detour factor
   A->>S: Read consistent report revision
   A->>P: Validated trip and visible observations
-  P->>P: Classify active reports; enumerate 1–2 orders
+  P->>P: Classify active reports and enumerate 1-2 orders
   P->>R: Fastest baseline for each order
   R-->>P: Provider geometry and travel estimates
   P->>R: Avoidance directions using approximate flood polygons
   R-->>P: Candidate geometry or explicit no-route
-  P->>P: Score exposure; enforce detour; deduplicate; rank
+  P->>P: Score exposure, enforce detour, deduplicate and rank
   P-->>A: Up to 3 routes, revision, limitations
   A-->>U: Recommendation and fastest baseline
   U->>U: Fit full route geometry on map
@@ -160,7 +160,7 @@ Updates use optimistic revision checks and up to five retries to avoid silently 
 flowchart LR
   Browser[Browser] --> CDN[CloudFront: HTTPS and security headers]
   CDN -->|Web assets via OAC| WebBucket[Private S3 web bucket]
-  CDN -->|/api/*; caching disabled| API[API Gateway HTTP API]
+  CDN -->|/api/* with caching disabled| API[API Gateway HTTP API]
   API --> Lambda[Node.js 24 ARM64 Lambda]
   Lambda --> Table[DynamoDB: conditional snapshot writes]
   Lambda --> Photos[Private S3 photos]
