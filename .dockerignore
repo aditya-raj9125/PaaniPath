@@ -1,0 +1,15 @@
+node_modules
+dist
+.data
+.git
+*.log
+.env*
+__pycache__
+docs/DEPLOYMENT.md
+.aws
+.codex
+.agents
+**/samconfig.toml
+**/samconfig.yaml
+**/*.pem
+**/*.key

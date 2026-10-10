@@ -1,0 +1,30 @@
+{
+  "name": "paanipath",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "API-powered vehicle-aware waterlogging trip planning for Delhi NCR",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "start": "node --env-file-if-exists=.env scripts/start.mjs",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
+    "lint": "node scripts/lint.mjs",
+    "test": "node scripts/test.mjs",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build && node scripts/validate-infra.mjs && npm run docs:check",
+    "docs:check": "node scripts/validate-docs.mjs",
+    "test:e2e": "node scripts/e2e.mjs",
+    "test:http": "node scripts/test-http.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "25.1.0",
+    "typescript": "5.9.3"
+  }
+}
