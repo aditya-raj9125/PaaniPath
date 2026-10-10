@@ -1,0 +1,1 @@
+{"name":"@paanipath/data","version":"1.0.0","private":true,"type":"module","exports":"./src/index.ts","dependencies":{"@paanipath/domain":"1.0.0","@paanipath/routing":"1.0.0"}}
