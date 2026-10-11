@@ -6,6 +6,8 @@ The frontend uses same-origin `/api/*` JSON requests. Shared types/validation li
 
 Non-GET requests require `Content-Type: application/json` and `X-PaaniPath: 1`. The server issues an opaque signed `pp_session` cookie for anonymous ownership/vote identity. It is not account authentication. Preserve cookies between bootstrap and mutations. AWS cookies are Secure, HttpOnly and SameSite=Strict; local HTTP omits Secure.
 
+The browser gives bootstrap 30 seconds per attempt, including response-body download, and retries a timeout once with a fresh signal. This allows up to two attempts to load the full seeded catalogue; server errors and other network failures are not automatically retried. Other requests without caller-managed cancellation retain a 12-second budget. Reports, votes and other mutations are never automatically replayed. Exhausted browser timeouts show a readable connection/retry message, not the raw `signal timed out` exception. This is a startup resilience measure, not a reduction in catalogue size or polling traffic.
+
 JSON responses use `Cache-Control: no-store` and `X-Request-Id`. Errors have this envelope:
 
 ```json
