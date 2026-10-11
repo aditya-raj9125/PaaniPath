@@ -1,6 +1,6 @@
 # API contract
 
-The frontend uses same-origin `/api/*` JSON requests. Shared types/validation live in [packages/domain](../packages/domain/src/types.ts); dispatch lives in [application.ts](../apps/api/src/application.ts). See [README](../README.md), [Algorithms](ALGORITHMS.md) and [Engineering](ENGINEERING.md) for architecture and constraints.
+The frontend uses same-origin `/api/*` JSON requests. Shared types/validation live in [packages/domain](../packages/domain/src/types.ts); dispatch lives in [application.ts](../apps/api/src/application.ts). See [README](../README.md), [Algorithms](ALGORITHMS.md), [Engineering](ENGINEERING.md) and [Deployment](DEPLOYMENT.md) for architecture, constraints and operations.
 
 ## Headers, sessions and errors
 
@@ -39,6 +39,12 @@ Unknown failures use `INTERNAL_ERROR` with a generic message. Credentials/provid
 Bootstrap includes `journeys`, an array of `{id,title,locations}` using the shared `DemoJourney` contract. Seven entries have two locations, two have three, and one has four. The catalogue supplies only editable stop coordinates; it does not issue directions requests or contain route geometry. The browser starts with empty A/B fields, and selecting a preset submits the normal routing request. Catalogue presence does not imply seed mode is enabled or that reports remain fresh.
 
 Avoidance candidates use risky/stale reports within 2 km of provider baseline geometry. Exposure scoring always checks every report, including hazards encountered by detours outside that corridor; warnings disclose this candidate-generation limitation.
+
+### Report refresh protocol
+
+`GET /api/reports` returns the complete public `{spots,revision}` body. It does not accept a route corridor, `since` revision or regional partition, and has no revision-only endpoint, ETag/304 response or incremental event stream. The frontend polls every five seconds while visible and uses `revision` to decide whether report changes require UI work, not to avoid downloading an unchanged response. Closed tabs no longer poll, and hidden tabs pause scheduled refreshes.
+
+Route-scoped hotspots are a client display filter only. Backend route scoring still considers all active reports. API caching remains disabled to avoid stale observations/session responses. See [the current operating-cost boundary](ENGINEERING.md#polling-and-operating-cost-boundary) before estimating production traffic.
 
 ## Routing request
 

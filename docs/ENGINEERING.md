@@ -134,6 +134,29 @@ Structural checks verify repository assumptions, not complete CloudFormation sch
 
 The raw API Gateway endpoint remains accessible; CloudFront alone is not an authorization boundary. No VPC is needed for this pilot; introducing private subnets without egress breaks provider calls. Use account-approved deployment credentials, never static browser/runtime keys.
 
+### AWS use-case walkthrough
+
+| User or operator action | Request path | State and failure behavior |
+| --- | --- | --- |
+| Open the website | Browser → CloudFront → private S3 web origin, then `/api/bootstrap` → HTTP API → Lambda → DynamoDB | Assets are cacheable, API responses are not. Bootstrap creates seeds once when enabled and returns the current public catalogue |
+| Search an address | CloudFront → HTTP API → Lambda → Photon | Saved-place matching and bounded per-process caches supplement online results. Provider failure exposes a warning and labelled saved suggestions |
+| Compare a trip | CloudFront → HTTP API → Lambda → ORS, with a DynamoDB snapshot read | Real provider baselines/avoidance candidates are ranked locally. Missing/rejected keys, timeouts and quotas return structured errors, never fabricated routes |
+| Submit a report or vote | CloudFront → HTTP API → Lambda → conditional DynamoDB write | Signed anonymous session, validation and nearby checks precede bounded CAS retries. Public responses exclude reporter/voter identities |
+| Attach or view a photo | Lambda → private S3 photo prefix | Browser never receives AWS credentials or a public bucket URL. Photos expire after 30 days, upload and report mutation are not one atomic transaction |
+| Refresh observations | Visible browser tab → `/api/reports` → Lambda → DynamoDB | Full current catalogue is returned, even when revision is unchanged. Hidden tabs pause and closed tabs cease polling |
+| Deploy or update | Local source → build → SAM artifact S3/CloudFormation → Lambda, followed by web S3 upload and CloudFront invalidation | GitHub is version history/CI, not the deployment transport. Reuse the same account, region and stack name to update existing resources |
+| Respond to operational issues | CloudWatch metrics → alarms → SNS email, plus account-wide budget email | Subscription confirmation is required. Budgets warn about spend and do not stop the application |
+
+**Trust boundaries:** the public browser is untrusted, input validation belongs at the API boundary, provider secrets remain server-side, and AWS storage requests use the Lambda execution role. Signed anonymous sessions establish ownership continuity rather than verified people. Secrets Manager references are resolved during deployment; it is not a per-request runtime dependency.
+
+**Deployment boundaries:** CloudFront is global, whereas Lambda, HTTP API, DynamoDB, photo storage and operational resources use `us-east-1`. OSM tiles, Photon and ORS remain separate providers. The template does not include EC2, RDS, an application load balancer, NAT Gateway, VPC, custom domain or WAF. Adding these would change cost and operational assumptions.
+
+### Polling and operating-cost boundary
+
+The browser currently polls every five seconds while visible. Each successful `/api/reports` request reads the full compressed/base64 DynamoDB snapshot and serializes all public observations; the 750 m map filter does not reduce the response. A local measurement of the initial 6,505-case catalogue produced approximately **3.7 MB of uncompressed report JSON** and a **229 KB stored snapshot payload**. These are sample sizes, not measured live transfer/billing or a constant size after community activity.
+
+One visible tab therefore attempts up to 720 polls per hour. Network delays, visibility changes and the single in-flight refresh guard can reduce that count. Freshness is also evaluated locally, but current polling does not skip unchanged bodies. Database compression is not HTTP compression. Before broad public use, implement a small revision-metadata read, conditional/delta responses, adaptive intervals and regional delivery while retaining complete backend route-risk evaluation. Those improvements are **proposed, not present in this release**. Budget alerts are account-wide, so other workloads can trigger them.
+
 ## Testing and quality gates
 
 ```powershell

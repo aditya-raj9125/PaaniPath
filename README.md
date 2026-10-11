@@ -8,12 +8,23 @@ PaaniPath helps road users compare routes against reported waterlogging instead 
 
 ## Explore the project
 
-- [Data structures and algorithms](docs/ALGORITHMS.md): implemented algorithms, pseudocode, complexity, invariants, worked example, research context and evaluator walkthrough.
+- [Data structures and algorithms](docs/ALGORITHMS.md): planning stages, mathematical notation, complexity, invariants, worked example, research context and evaluator walkthrough.
 - [API contract](docs/API.md): endpoints, requests, responses, errors and session behavior.
 - [Engineering guide](docs/ENGINEERING.md): monorepo boundaries, tests, security, AWS integration, seed provenance and design decisions.
 - [AWS deployment](docs/DEPLOYMENT.md): one-command Northern Virginia release, private configuration, monitoring and recovery.
 
 ## What it does
+
+### Who it helps
+
+| Use case | What the user does | What PaaniPath explains |
+| --- | --- | --- |
+| NCR commuter | Compare A-to-B travel for a selected vehicle | Returned baseline versus lower-exposure candidates within a chosen detour allowance |
+| Multi-stop traveller | Add one or two stops and optionally compare both intermediate orders | The exposure/time trade-off without changing the start or destination |
+| Community contributor | Submit depth observations and independently confirm or dismiss nearby cases | Freshness and agreement, without claiming reports are verified road closures |
+| Judge or evaluator | Choose one of ten editable demo journeys and inspect hotspot counts/cases | Live provider geometry over clearly labelled simulated observations |
+
+### Implemented capabilities
 
 | Capability | Implementation |
 | --- | --- |
@@ -168,16 +179,25 @@ Updates use optimistic revision checks and up to five retries to avoid silently 
 
 ```mermaid
 flowchart LR
-  Browser[Browser] --> CDN[CloudFront: HTTPS and security headers]
-  CDN -->|Web assets via OAC| WebBucket[Private S3 web bucket]
-  CDN -->|/api/* with caching disabled| API[API Gateway HTTP API]
-  API --> Lambda[Node.js 24 ARM64 Lambda]
-  Lambda --> Table[DynamoDB: conditional snapshot writes]
-  Lambda --> Photos[Private S3 photos]
-  Lambda --> ORS[ORS directions API]
-  Lambda --> Photon[Photon API]
-  Lambda --> Logs[CloudWatch: 14-day logs]
-  Role[IAM execution role] -. scoped access .-> Lambda
+  subgraph Delivery[Global delivery]
+    Browser[Browser] --> CDN[CloudFront HTTPS]
+    CDN -->|Static assets via OAC| WebBucket[Private S3 web bucket]
+  end
+  subgraph Regional[Application in us-east-1]
+    API[API Gateway HTTP API] --> Lambda[Node.js 24 ARM64 Lambda]
+    Lambda --> Table[DynamoDB report snapshot]
+    Lambda --> Photos[Private S3 photos]
+    Lambda --> Logs[CloudWatch logs]
+    Alarms[Lambda metric alarms] --> SNS[SNS email alerts]
+    Role[IAM execution role] -. scoped access .-> Lambda
+  end
+  CDN -->|Uncached API requests| API
+  Lambda --> ORS[External ORS directions]
+  Lambda --> Photon[External Photon search]
+  Browser --> Tiles[External OSM tiles]
+  Deploy[Local SAM deployment] --> Secret[Secrets Manager]
+  Secret -. resolved during deployment .-> Lambda
+  Budget[Account-wide AWS Budget] --> Email[Cost alert email]
 ```
 
 | AWS service | How this project uses it |
@@ -194,6 +214,8 @@ flowchart LR
 | Secrets Manager | Deployment script creates/reuses a tagged runtime secret with version-pinned references |
 
 AWS runtime credentials come from the Lambda execution role. The storage adapter signs requests with AWS Signature V4 and does not ship AWS credentials to the browser. The deployment script passes version-pinned Secrets Manager references through `NoEcho` parameters into Lambda environment variables. The managed secret exists outside the application stack and is retained independently; custom-domain certificates are not provisioned.
+
+**Use-case flows:** opening the app serves S3 assets through CloudFront, route comparisons invoke Lambda and ORS, and reports/votes use conditional DynamoDB writes. Photos are served through the API from private S3. OSM tiles go directly to the tile provider, not your AWS buckets. Operational alarms go through SNS, while budget warnings are sent separately to the configured email. See [the request-by-request AWS walkthrough](docs/ENGINEERING.md#aws-use-case-walkthrough) for boundaries and failure behavior.
 
 The automated release targets **Northern Virginia (`us-east-1`)**: checks and SAM deployment, then private web uploads, CloudFront invalidation and public smoke checks. The template outputs `WebsiteUrl`, `WebBucketName`, `DistributionId` and `ApiUrl`. Install AWS CLI v2/SAM and configure an approved AWS profile first, then:
 
@@ -279,6 +301,7 @@ For a deployed smoke test, set `TEST_BASE_URL` to its HTTPS hostname before `npm
 - Mutations require JSON and `X-PaaniPath: 1`; signed cookies, validation, bounded payloads and nearby-vote checks reduce accidental misuse but do not replace production authentication/moderation.
 - Current report storage is capped at 10,000 observations; gzip/base64 DynamoDB payloads must remain below 350,000 bytes. Legacy uncompressed snapshots remain readable. This single-snapshot pilot must be partitioned for larger deployments.
 - Provider calls have deadlines, bounded comparison concurrency and per-process budgets/caches. Multiple Lambda instances require a durable shared quota limiter.
+- Visible tabs currently fetch the complete public report catalogue every five seconds. Hidden/closed tabs stop polling. Revision-only checks, incremental/regional report delivery and longer adaptive intervals are proposed optimizations, not implemented features.
 - Point buffers may block parallel roads or bridges; proximity scoring cannot distinguish elevation/road-level topology. Missing reports mean unknown conditions, not dry roads.
 - Public tile/geocoding services provide no application SLA. Respect [OSM tile usage policy](https://operations.osmfoundation.org/policies/tiles/) and provision appropriate production services.
 

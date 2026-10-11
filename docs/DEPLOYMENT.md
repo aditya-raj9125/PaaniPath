@@ -42,6 +42,10 @@ aws --version
 sam --version
 ```
 
+If SAM works in one terminal but not PowerShell, their PATH settings differ or the working shell defines an alias. In the working terminal run `where.exe sam` (Windows CMD) or `Get-Command sam -All` (PowerShell) to identify the installed executable. Set its full `.exe` or `.cmd` path in ignored `.env.deploy`, for example `SAM_CLI_PATH="C:\Program Files\Amazon\AWSSAMCLI\bin\sam.cmd"`, using the actual path reported on your machine. A Linux/WSL SAM installation is not a Windows executable: install the Windows SAM CLI or run the entire workflow in the Linux environment instead.
+
+The deployer resolves Windows tools from the parent process PATH before launching PowerShell. It does not depend on shell aliases or profile initialization, and missing commands fail immediately. It streams both output channels with known-secret redaction so SAM diagnostics are visible.
+
 Docker is not required for this workflow: the repository builds JavaScript directly rather than using a SAM build container.
 
 Use an account-approved IAM role/profile, preferably temporary credentials with MFA. Do not deploy using the AWS root user. If your account uses IAM Identity Center:
@@ -75,6 +79,7 @@ Open `.env.deploy` privately and fill the following settings. This file is ignor
 | `AWS_ACCOUNT_ID` | Your expected 12-digit account ID |
 | `AWS_REGION` | `us-east-1`, the only supported region in this release script |
 | `AWS_PROFILE` | Your configured profile, e.g. `paanipath`; default example is `default` |
+| `SAM_CLI_PATH` | Optional absolute SAM executable path when PATH differs between terminals; blank uses process PATH |
 | `DEPLOY_STACK_NAME` | Stable unique name, e.g. `paanipath-ncr`, 1–32 characters starting with a letter |
 | `DEPLOY_ALERT_EMAIL` | Real email address for operational and budget alerts |
 | `DEPLOY_MONTHLY_BUDGET_USD` | Positive monthly account-wide budget amount, default `10` |
@@ -152,17 +157,21 @@ The secret is outside the application stack and remains after stack deletion. Te
 
 The monthly budget is account-wide, not isolated to this stack. Its calculation excludes credits/refunds so credits do not hide underlying spend. Actual-spend notices at 80% and 100% are warnings, not automatic shutdown. Consult [AWS Budgets configuration](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-budgets-budget.html) and actual Billing usage; credit eligibility and current pricing remain your responsibility.
 
+**Current traffic behavior:** visible tabs fetch all public reports every five seconds, not just cases near the displayed route. Closing/hiding the tab stops/pauses its polling, but deployed storage, secrets and monitoring remain. The initial catalogue's report response is approximately 3.7 MB before HTTP compression, so estimate usage by total visible-tab hours, not only distinct visitors. Review [polling and operating-cost boundaries](ENGINEERING.md#polling-and-operating-cost-boundary), actual CloudFront transfer, Lambda duration and DynamoDB usage in Billing before widening access. No fixed dollar estimate is a spending guarantee.
+
 Lambda alarms detect at least one error/throttle in a five-minute period and a maximum duration of at least 22 seconds. They are basic pilot alerts, not complete observability. Inspect CloudFormation events, Lambda logs, SNS subscriptions, CloudFront status and provider quotas when diagnosing failures.
 
 | Failure | What to do |
 | --- | --- |
 | Tool missing | Install AWS CLI v2/SAM/Node 24 and reopen PowerShell |
 | Wrong account or expired login | Correct the profile/account ID or renew temporary credentials/SSO |
+| Previous project's IAM user appears | Verify `.env.deploy` selects the intended profile, then run STS with that same explicit profile. The terminal's implicit identity may differ |
 | Access denied | Review the failed operation with your administrator, including SCPs and pass-role permissions |
 | Unmanaged existing stack/secret | Use a new stack name or have the owner review it; the script does not delete/adopt it |
 | Lambda quota/memory restriction | Review Service Quotas in `us-east-1`; keep reservation at 0 unless approved |
 | CloudFormation failed/rollback state | Inspect Events first; resolve the cause using AWS guidance before rerunning |
-| ORS smoke fails | Check provider credentials/quota/network/plan limits; infrastructure can already be deployed |
+| ORS smoke fails | Infrastructure and web uploads can already be deployed. Read the `/api/routes` error code, do not infer provider readiness from `/api/health` |
+| `ROUTING_CREDENTIALS` | Privately verify the active ORS key in `.env.deploy`, distinguish it from local `.env`, and check the resolved Lambda value without publishing it. Correct desired configuration and redeploy the same stack |
 | Upload or CloudFront waiter fails | Inspect the distribution/stack, then rerun after resolving the cause |
 | Website MIME/cache error | Review S3 object metadata and invalidation; rerun publication through this script |
 | Alerts absent | Confirm SNS subscription and check the budget recipient/settings |
@@ -180,4 +189,4 @@ git status --short
 git diff --cached --check
 ```
 
-Inspect the actual staged diff for secrets before committing. The older ignored `prepare-commits.ps1` helper has a fixed file plan and may need updating for these new deployment files; it is not the deployment script. Deployment itself never commits or pushes to GitHub.
+Inspect the actual staged diff for secrets before committing. Any optional local commit helper must use a reviewed file plan and remain ignored; it is not the deployment script. Deployment itself never commits or pushes to GitHub. Pushing code to GitHub does not update the deployed website unless you separately run this release command or deliberately configure a deployment workflow.
