@@ -25,6 +25,8 @@ export interface Spot {
   readonly votes: Readonly<Record<string, 'confirm' | 'dismiss'>>;
   readonly photoId?: string;
   readonly archived?: boolean;
+  readonly hotspot?: { readonly id: string; readonly name: string; readonly coords: Coordinates };
+  readonly roadPlacement?: { readonly provider: 'openrouteservice'; readonly graphDate: string; readonly snapped: true };
   readonly evidence?: { readonly title: string; readonly url: string; readonly publishedAt: string; readonly coordinates: 'approximate'; readonly scenario: true };
 }
 export interface PublicSpot extends Omit<Spot, 'reporterId' | 'votes'> {
@@ -41,6 +43,11 @@ export interface MapMetadata {
   readonly limitations: string;
 }
 export interface Place { readonly id: string; readonly name: string; readonly coords: Coordinates }
+export interface DemoJourney {
+  readonly id: string;
+  readonly title: string;
+  readonly locations: readonly Place[];
+}
 export interface PlaceSearchResponse {
   readonly places: readonly Place[];
   readonly source: 'local' | 'photon' | 'mixed';
@@ -93,6 +100,7 @@ export interface RouteResponse {
 export interface BootstrapResponse {
   readonly graph: { readonly metadata: MapMetadata };
   readonly places: readonly Place[];
+  readonly journeys?: readonly DemoJourney[];
   readonly profiles: readonly VehicleProfile[];
   readonly spots: readonly PublicSpot[];
   readonly revision: number;

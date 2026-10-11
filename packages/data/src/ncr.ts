@@ -1,6 +1,8 @@
 import type { Place, Spot } from '@paanipath/domain';
+import { REPORT_CAPACITY } from '@paanipath/domain';
 import { PLACES } from './pilot.ts';
-import { GURUGRAM_PLACES, seedGurugramSpots } from './gurugram.ts';
+import { GURUGRAM_PLACES } from './gurugram.ts';
+import { ROAD_HOTSPOTS, ROAD_SEED_PROVENANCE } from './road-hotspots.ts';
 
 /** City/landmark shortcuts; online search supplies actual addresses and POIs. */
 const NCR_BASE_PLACES: readonly Place[] = [...PLACES,
@@ -50,27 +52,28 @@ const NCR_BASE_PLACES: readonly Place[] = [...PLACES,
   { id: 'bharatpur', name: 'Bharatpur, Rajasthan', coords: [27.2152, 77.4928] },
 ];
 export const NCR_PLACES: readonly Place[] = [...NCR_BASE_PLACES, ...GURUGRAM_PLACES];
-export const SEED_VERSION = 'api-gurugram-v2';
+export const SEED_VERSION = 'road-hotspots-v3';
 
-/** Simulated observations near saved places; not surveyed flood reports or road-snapped pins. */
+/** Irregular simulated cases at API-curated road coordinates, never random off-road offsets. */
 export function seedApiSpots(now: number): Spot[] {
-  const general = NCR_BASE_PLACES.flatMap((place, index) => Array.from({ length: 4 }, (_item, offset) => {
-    const coords = [place.coords[0] + offset * .0004, place.coords[1] + offset * .0004] as const;
-    const age = index % 9 === 0 ? 75 : 2 + index % 45;
-    return { id: `api-seed-${index}-${offset}`, name: `${place.name} · simulated location report`, coords,
-      segmentId: `location:${coords.join(':')}`, depth: ((index + offset) % 4 + 1) as Spot['depth'],
+  return ROAD_HOTSPOTS.flatMap((hotspot, index) => hotspot.cases.map((coords, offset) => {
+    const hash = ((index + 1) * 2654435761 + (offset + 1) * 2246822519) >>> 0;
+    const age = hash % 11 === 0 ? 75 : 3 + hash % 45;
+    return { id: `road-seed-${hotspot.id}-${offset}`, name: `${hotspot.name} · simulated case ${offset + 1}`, coords,
+      segmentId: `location:${coords.join(':')}`, depth: (hash % 4 + 1) as Spot['depth'],
       source: 'seeded' as const, createdAt: now - age * 60_000, lastConfirmedAt: now - age * 60_000,
-      confirms: index % 4, dismisses: 0, cleared: false, reporterId: 'ncr-simulation', votes: {} };
+      confirms: 0, dismisses: 0, cleared: false, reporterId: 'road-simulation', votes: {},
+      hotspot: { id: hotspot.id, name: hotspot.name, coords: hotspot.coords },
+      roadPlacement: { provider: 'openrouteservice' as const, graphDate: ROAD_SEED_PROVENANCE.graphDate, snapped: true as const } };
   }));
-  return [...general, ...seedGurugramSpots(now)];
 }
 
 /** One-time catalogue upgrade: preserve community data and existing scenario votes/freshness. */
 export function reconcileSeedSpots(previous: readonly Spot[], now: number): Spot[] {
   const community = previous.filter(spot => spot.source === 'community');
   const existing = new Map(previous.filter(spot => spot.source === 'seeded').map(spot => [spot.id, spot]));
-  const catalogue = seedApiSpots(now).sort((a, b) => Number(b.evidence !== undefined) - Number(a.evidence !== undefined));
-  const seeds = catalogue.slice(0, Math.max(0, 400 - community.length)).map(seed => {
+  const catalogue = seedApiSpots(now);
+  const seeds = catalogue.slice(0, Math.max(0, REPORT_CAPACITY - community.length)).map(seed => {
     const old = existing.get(seed.id);
     return old === undefined ? seed : { ...old, ...(seed.evidence === undefined ? {} : { evidence: seed.evidence }) };
   });

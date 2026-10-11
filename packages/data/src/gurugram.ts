@@ -1,4 +1,4 @@
-import type { Place, Spot } from '@paanipath/domain';
+import type { Place } from '@paanipath/domain';
 
 export const HOTSPOT_SOURCES = {
   abp: { title: 'ABP Live: Gurugram waterlogging', url: 'https://news.abplive.com/cities/gurugram-comes-to-standstill-as-roads-flooded-offices-announce-work-from-home-video-1786690', publishedAt: '2025-07-10' },
@@ -35,16 +35,3 @@ export const GURUGRAM_HOTSPOTS: readonly Hotspot[] = [
 export const GURUGRAM_PLACES: readonly Place[] = GURUGRAM_HOTSPOTS.map(hotspot => ({
   id: `ggn-${hotspot.id}`, name: `${hotspot.name}, Gurugram`, coords: hotspot.coords,
 }));
-
-export function seedGurugramSpots(now: number): Spot[] {
-  const offsets = [[0, 0], [.0007, 0], [0, .0007], [-.0007, -.0007]] as const;
-  return GURUGRAM_HOTSPOTS.flatMap((hotspot, index) => offsets.map(([lat, lng], variant) => {
-    const coords = [hotspot.coords[0] + lat, hotspot.coords[1] + lng] as const;
-    const age = variant === 3 ? 75 : 5 + index;
-    return { id: `ggn-seed-${hotspot.id}-${variant}`, name: `${hotspot.name}, Gurugram · simulated scenario ${variant + 1}`,
-      coords, segmentId: `location:${coords.join(':')}`, depth: ((index + variant) % 4 + 1) as Spot['depth'],
-      source: 'seeded' as const, createdAt: now - age * 60_000, lastConfirmedAt: now - age * 60_000,
-      confirms: 0, dismisses: 0, cleared: false, reporterId: 'gurugram-simulation', votes: {},
-      evidence: { ...HOTSPOT_SOURCES[hotspot.reference], coordinates: 'approximate' as const, scenario: true as const } };
-  }));
-}

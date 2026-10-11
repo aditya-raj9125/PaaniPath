@@ -1,4 +1,5 @@
 import { createHash, createHmac } from 'node:crypto';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { AppError, assert } from '@paanipath/domain';
 import type { Photo, Snapshot, Store } from './store.ts';
 
@@ -7,7 +8,7 @@ const hmac = (key: string | Uint8Array, value: string): Buffer => createHmac('sh
 
 /** Minimal AWS Signature V4 transport; no browser credentials and no SDK dependency. */
 async function awsRequest(service: 'dynamodb' | 's3', region: string, url: URL, method: string,
-  body: string | Uint8Array, extraHeaders: Readonly<Record<string, string>> = {}): Promise<Response> {
+  body: string | Uint8Array, extraHeaders: Readonly<Record<string, string>> = {}, transport: typeof fetch = fetch): Promise<Response> {
   const access = process.env.AWS_ACCESS_KEY_ID;
   const secret = process.env.AWS_SECRET_ACCESS_KEY;
   assert(access && secret, 'AWS_CONFIGURATION', 'AWS runtime credentials are unavailable.', 500);
@@ -23,14 +24,14 @@ async function awsRequest(service: 'dynamodb' | 's3', region: string, url: URL, 
   headers.Authorization = `AWS4-HMAC-SHA256 Credential=${access}/${scope}, SignedHeaders=${names.join(';')}, Signature=${signature}`;
   const init: RequestInit = { method, headers, signal: AbortSignal.timeout(8000) };
   if (method !== 'GET') init.body = typeof body === 'string' ? body : Buffer.from(body);
-  return fetch(url, init);
+  return transport(url, init);
 }
 
 export class DynamoStore implements Store {
-  constructor(private readonly table: string, private readonly bucket: string, private readonly region: string) {}
+  constructor(private readonly table: string, private readonly bucket: string, private readonly region: string, private readonly transport: typeof fetch = fetch) {}
   private async call(operation: string, body: unknown): Promise<Record<string, unknown>> {
     const response = await awsRequest('dynamodb', this.region, new URL(`https://dynamodb.${this.region}.amazonaws.com/`), 'POST', JSON.stringify(body),
-      { 'content-type': 'application/x-amz-json-1.0', 'x-amz-target': `DynamoDB_20120810.${operation}` });
+      { 'content-type': 'application/x-amz-json-1.0', 'x-amz-target': `DynamoDB_20120810.${operation}` }, this.transport);
     const result = await response.json() as Record<string, unknown>;
     if (!response.ok) {
       if (String(result.__type).includes('ConditionalCheckFailed')) throw new AppError('CONFLICT', 'Concurrent update; retry.', 409);
@@ -41,15 +42,16 @@ export class DynamoStore implements Store {
   async read(): Promise<Snapshot | undefined> {
     const result = await this.call('GetItem', { TableName: this.table, Key: { pk: { S: 'PILOT' } }, ConsistentRead: true });
     if (result.Item === undefined) return undefined;
-    const item = result.Item as { payload: { S: string } };
-    return JSON.parse(item.payload.S) as Snapshot;
+    const item = result.Item as { payload: { S: string }; encoding?: { S: string } };
+    const payload = item.encoding?.S === 'gzip-base64' ? gunzipSync(Buffer.from(item.payload.S, 'base64'), { maxOutputLength: 32_000_000 }).toString('utf8') : item.payload.S;
+    return JSON.parse(payload) as Snapshot;
   }
   async compareAndSwap(previousRevision: number | undefined, next: Snapshot): Promise<boolean> {
-    const payload = JSON.stringify(next);
+    const payload = gzipSync(JSON.stringify(next)).toString('base64');
     assert(Buffer.byteLength(payload) < 350_000, 'PILOT_CAPACITY', 'This pilot store has reached its capacity. Export reports before expanding the pilot.', 503);
     try {
       await this.call('PutItem', { TableName: this.table,
-        Item: { pk: { S: 'PILOT' }, revision: { N: String(next.revision) }, payload: { S: payload } },
+        Item: { pk: { S: 'PILOT' }, revision: { N: String(next.revision) }, payload: { S: payload }, encoding: { S: 'gzip-base64' } },
         ConditionExpression: previousRevision === undefined ? 'attribute_not_exists(pk)' : 'revision = :previous',
         ...(previousRevision === undefined ? {} : { ExpressionAttributeValues: { ':previous': { N: String(previousRevision) } } }) });
       return true;
@@ -60,11 +62,11 @@ export class DynamoStore implements Store {
   }
   async putPhoto(id: string, photo: Photo): Promise<void> {
     const response = await awsRequest('s3', this.region, new URL(`https://${this.bucket}.s3.${this.region}.amazonaws.com/photos/${id}`), 'PUT', photo.bytes,
-      { 'content-type': photo.contentType });
+      { 'content-type': photo.contentType }, this.transport);
     assert(response.ok, 'PHOTO_STORAGE', 'Photo upload failed. Please retry.', 503);
   }
   async getPhoto(id: string): Promise<Photo | undefined> {
-    const response = await awsRequest('s3', this.region, new URL(`https://${this.bucket}.s3.${this.region}.amazonaws.com/photos/${id}`), 'GET', '');
+    const response = await awsRequest('s3', this.region, new URL(`https://${this.bucket}.s3.${this.region}.amazonaws.com/photos/${id}`), 'GET', '', {}, this.transport);
     if (response.status === 404) return undefined;
     assert(response.ok, 'PHOTO_STORAGE', 'Photo is temporarily unavailable.', 503);
     const contentType = response.headers.get('content-type');

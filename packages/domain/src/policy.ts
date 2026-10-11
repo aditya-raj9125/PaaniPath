@@ -1,6 +1,7 @@
 import type { Depth, PublicSpot, Spot, VehicleProfile, Verdict } from './types.ts';
 
 export const STALE_AFTER_MS = 60 * 60 * 1000;
+export const REPORT_CAPACITY = 10_000;
 export const SAFETY_WARNING = 'Never enter standing water. Reports can be incomplete or outdated; assumed vehicle limits do not guarantee safety.';
 export const PROFILES: readonly VehicleProfile[] = [
   { type: 'scooter', name: 'Scooter', marginal: 2, damaging: 3 },

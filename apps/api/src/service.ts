@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { AppError, assert, PROFILES, publicSpot, reportInput, routeInput, voteInput } from '@paanipath/domain';
+import { AppError, assert, PROFILES, publicSpot, reportInput, routeInput, voteInput, REPORT_CAPACITY } from '@paanipath/domain';
 import type { BootstrapResponse, ReportsResponse, RouteResponse, Spot } from '@paanipath/domain';
-import { seedApiSpots, reconcileSeedSpots, SEED_VERSION, NCR_PLACES } from '@paanipath/data';
+import { seedApiSpots, reconcileSeedSpots, SEED_VERSION, NCR_PLACES, DEMO_JOURNEYS } from '@paanipath/data';
 import type { Snapshot, Store, Photo } from '@paanipath/data';
 import { distanceMetres } from '@paanipath/routing';
 import type { RoutingExecutor } from './api-routing.ts';
@@ -70,7 +70,7 @@ export class PaaniPathService {
     assert(profile, 'CONFIGURATION', 'Vehicle profiles are unavailable.', 500);
     // Only provider/search metadata is exposed; no downloaded road graph exists.
     const graph = { metadata: API_MAP_METADATA };
-    return { graph, places: NCR_PLACES, profiles: PROFILES,
+    return { graph, places: NCR_PLACES, journeys: DEMO_JOURNEYS, profiles: PROFILES,
       spots: this.visibleSpots(current).map(spot => publicSpot(spot, profile, this.clock())), revision: current.revision,
       demoMode: this.options.demoMode, seededMode: this.options.seededMode === true, actorId,
       coverage: { nodes: 0, edges: 0, preview: false } };
@@ -105,7 +105,7 @@ export class PaaniPathService {
     let merged = false;
     const next = await this.update(current => {
       const limited = this.rateLimit(current, actor, 'report', 5);
-      assert(current.spots.length < 400, 'PILOT_CAPACITY', 'This pilot is full. Archive old reports before adding more.', 503);
+      assert(current.spots.length < REPORT_CAPACITY, 'PILOT_CAPACITY', 'This pilot is full. Archive old reports before adding more.', 503);
       const duplicate = this.visibleSpots(current).find(spot => spot.source === 'community' && !spot.cleared && !spot.archived && distanceMetres(spot.coords, input.coords) < 65);
       if (duplicate !== undefined) {
         assert(duplicate.reporterId !== actor && duplicate.votes[actor] === undefined, 'ALREADY_REPORTED', 'You already reported or confirmed this spot.');
