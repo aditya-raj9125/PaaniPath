@@ -9,6 +9,7 @@ function walk(value) {
   if (!value || typeof value !== 'object') return;
   if ('Ref' in value) assert(knownRefs.has(value.Ref), `Unknown Ref ${value.Ref}`);
   if ('Fn::GetAtt' in value) assert(resources.has(value['Fn::GetAtt'][0]), `Unknown GetAtt ${value['Fn::GetAtt']}`);
+  if ('Fn::If' in value) assert(value['Fn::If'][0] in template.Conditions, 'Unknown condition');
   for (const entry of Object.values(value)) walk(entry);
 }
 walk(template);
@@ -20,5 +21,17 @@ assert.equal(apiCache.ParametersInCacheKeyAndForwardedToOrigin.EnableAcceptEncod
 assert.equal(apiCache.ParametersInCacheKeyAndForwardedToOrigin.EnableAcceptEncodingBrotli, false);
 assert.equal(template.Resources.ReportsTable.DeletionPolicy, 'Retain');
 assert.equal(template.Parameters.SessionSecret.NoEcho, true);
+assert.equal(template.Parameters.OrsApiKey.NoEcho, true);
 assert.equal(template.Resources.ApiFunction.Properties.Runtime, 'nodejs24.x');
+assert.deepEqual(template.Resources.ApiFunction.Properties.MemorySize, { Ref: 'FunctionMemory' });
+assert.equal(template.Parameters.ReservedConcurrency.Default, 0);
+assert.deepEqual(template.Resources.ApiFunction.Properties.ReservedConcurrentExecutions,
+  { 'Fn::If': ['HasReservedConcurrency', { Ref: 'ReservedConcurrency' }, { Ref: 'AWS::NoValue' }] });
+assert.deepEqual(template.Resources.ApiFunction.Properties.Environment.Variables.ORS_URL, { Ref: 'OrsUrl' });
+assert.equal(template.Resources.MonthlyBudget.Properties.Budget.CostTypes.IncludeCredit, false);
+assert.equal(template.Resources.MonthlyBudget.Properties.Budget.CostTypes.IncludeRefund, false);
+for (const alarm of ['LambdaErrorsAlarm', 'LambdaThrottlesAlarm', 'LambdaDurationAlarm']) {
+  assert.deepEqual(template.Resources[alarm].Properties.AlarmActions, [{ Ref: 'AlertTopic' }]);
+}
+assert.equal(template.Resources.AlertSubscription.Properties.Protocol, 'email');
 console.log(`Infrastructure JSON and references passed (${resources.size} resources). Full SAM/provider validation still required before deployment.`);

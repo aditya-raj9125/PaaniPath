@@ -37,7 +37,38 @@
       "Type": "String",
       "NoEcho": true,
       "Description": "Server-side OpenRouteService API key"
+    },
+    "OrsUrl": {
+      "Type": "String",
+      "Default": "https://api.openrouteservice.org/v2/directions",
+      "AllowedPattern": "https://.+"
+    },
+    "FunctionMemory": {
+      "Type": "Number",
+      "Default": 2048,
+      "MinValue": 128,
+      "MaxValue": 10240
+    },
+    "ReservedConcurrency": {
+      "Type": "Number",
+      "Default": 0,
+      "MinValue": 0,
+      "MaxValue": 1000,
+      "Description": "0 omits reservation for new accounts, positive values require quota headroom"
+    },
+    "AlertEmail": {
+      "Type": "String",
+      "AllowedPattern": "[^\\s@,]+@[^\\s@,]+\\.[^\\s@,]+"
+    },
+    "MonthlyBudgetUsd": {
+      "Type": "Number",
+      "Default": 10,
+      "MinValue": 1,
+      "MaxValue": 100000
     }
+  },
+  "Conditions": {
+    "HasReservedConcurrency": { "Fn::Not": [{ "Fn::Equals": [{ "Ref": "ReservedConcurrency" }, 0] }] }
   },
   "Resources": {
     "ReportsTable": {
@@ -136,9 +167,9 @@
         "Architectures": [
           "arm64"
         ],
-        "MemorySize": 2048,
+        "MemorySize": { "Ref": "FunctionMemory" },
         "Timeout": 25,
-        "ReservedConcurrentExecutions": 5,
+        "ReservedConcurrentExecutions": { "Fn::If": ["HasReservedConcurrency", { "Ref": "ReservedConcurrency" }, { "Ref": "AWS::NoValue" }] },
         "Environment": {
           "Variables": {
             "STORE": "dynamodb",
@@ -162,6 +193,9 @@
             },
             "ORS_API_KEY": {
               "Ref": "OrsApiKey"
+            },
+            "ORS_URL": {
+              "Ref": "OrsUrl"
             }
           }
         },
@@ -426,6 +460,68 @@
             }
           ]
         }
+      }
+    },
+    "AlertTopic": {
+      "Type": "AWS::SNS::Topic"
+    },
+    "AlertSubscription": {
+      "Type": "AWS::SNS::Subscription",
+      "Properties": { "TopicArn": { "Ref": "AlertTopic" }, "Protocol": "email", "Endpoint": { "Ref": "AlertEmail" } }
+    },
+    "AlertTopicPolicy": {
+      "Type": "AWS::SNS::TopicPolicy",
+      "Properties": {
+        "Topics": [{ "Ref": "AlertTopic" }],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow", "Principal": { "Service": "cloudwatch.amazonaws.com" }, "Action": "sns:Publish", "Resource": { "Ref": "AlertTopic" },
+            "Condition": { "StringEquals": { "aws:SourceAccount": { "Ref": "AWS::AccountId" } }, "ArnLike": { "aws:SourceArn": { "Fn::Sub": "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-api-*" } } }
+          }]
+        }
+      }
+    },
+    "LambdaErrorsAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": { "Fn::Sub": "${AWS::StackName}-api-errors" },
+        "Namespace": "AWS/Lambda", "MetricName": "Errors", "Statistic": "Sum", "Period": 300,
+        "EvaluationPeriods": 1, "Threshold": 1, "ComparisonOperator": "GreaterThanOrEqualToThreshold", "TreatMissingData": "notBreaching",
+        "Dimensions": [{ "Name": "FunctionName", "Value": { "Ref": "ApiFunction" } }], "AlarmActions": [{ "Ref": "AlertTopic" }]
+      }
+    },
+    "LambdaThrottlesAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": { "Fn::Sub": "${AWS::StackName}-api-throttles" },
+        "Namespace": "AWS/Lambda", "MetricName": "Throttles", "Statistic": "Sum", "Period": 300,
+        "EvaluationPeriods": 1, "Threshold": 1, "ComparisonOperator": "GreaterThanOrEqualToThreshold", "TreatMissingData": "notBreaching",
+        "Dimensions": [{ "Name": "FunctionName", "Value": { "Ref": "ApiFunction" } }], "AlarmActions": [{ "Ref": "AlertTopic" }]
+      }
+    },
+    "LambdaDurationAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": { "Fn::Sub": "${AWS::StackName}-api-duration" },
+        "Namespace": "AWS/Lambda", "MetricName": "Duration", "Statistic": "Maximum", "Period": 300,
+        "EvaluationPeriods": 1, "Threshold": 22000, "ComparisonOperator": "GreaterThanOrEqualToThreshold", "TreatMissingData": "notBreaching",
+        "Dimensions": [{ "Name": "FunctionName", "Value": { "Ref": "ApiFunction" } }], "AlarmActions": [{ "Ref": "AlertTopic" }]
+      }
+    },
+    "MonthlyBudget": {
+      "Type": "AWS::Budgets::Budget",
+      "Properties": {
+        "Budget": {
+          "BudgetName": { "Fn::Sub": "${AWS::StackName}-account-monthly" },
+          "BudgetType": "COST", "TimeUnit": "MONTHLY",
+          "BudgetLimit": { "Amount": { "Ref": "MonthlyBudgetUsd" }, "Unit": "USD" },
+          "CostTypes": { "UseBlended": false, "IncludeCredit": false, "IncludeRefund": false }
+        },
+        "NotificationsWithSubscribers": [
+          { "Notification": { "NotificationType": "ACTUAL", "ComparisonOperator": "GREATER_THAN", "Threshold": 80, "ThresholdType": "PERCENTAGE" }, "Subscribers": [{ "SubscriptionType": "EMAIL", "Address": { "Ref": "AlertEmail" } }] },
+          { "Notification": { "NotificationType": "ACTUAL", "ComparisonOperator": "GREATER_THAN", "Threshold": 100, "ThresholdType": "PERCENTAGE" }, "Subscribers": [{ "SubscriptionType": "EMAIL", "Address": { "Ref": "AlertEmail" } }] }
+        ]
       }
     },
     "WebPolicy": {

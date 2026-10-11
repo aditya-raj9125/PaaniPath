@@ -13,7 +13,7 @@ export function createApplication(): Application {
   const demoMode = process.env.DEMO_MODE === 'true';
   const seededMode = process.env.SEED_MODE !== 'false';
   const directory = resolve(process.env.DATA_DIR ?? (demoMode ? '.data' : seededMode ? '.data/ncr-seeded' : '.data/ncr-live'));
-  const store = aws ? new DynamoStore(process.env.TABLE_NAME ?? '', process.env.PHOTO_BUCKET ?? '', process.env.AWS_REGION ?? 'ap-south-1') : new SqliteStore(directory);
+  const store = aws ? new DynamoStore(process.env.TABLE_NAME ?? '', process.env.PHOTO_BUCKET ?? '', process.env.AWS_REGION ?? 'us-east-1') : new SqliteStore(directory);
   let secret = process.env.SESSION_SECRET;
   if (aws) assert(secret && secret.length >= 32, 'SESSION_SECRET_REQUIRED', 'AWS requires a shared session secret of at least 32 characters.', 500);
   else if (secret === undefined) {
