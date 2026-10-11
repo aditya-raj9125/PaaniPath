@@ -1,6 +1,6 @@
 # Engineering guide
 
-This document consolidates architecture decisions, maps/NCR scope, seed research, security, testing and operations. See [README](../README.md) for diagrams, [Algorithms](ALGORITHMS.md) for implementation analysis and [API](API.md) for contracts. These are the three tracked documents; the deployment runbook remains local and ignored.
+This document consolidates architecture decisions, maps/NCR scope, seed research, security, testing and operations. See [README](../README.md) for diagrams, [Algorithms](ALGORITHMS.md) for implementation analysis, [API](API.md) for contracts and [Deployment](DEPLOYMENT.md) for the release workflow. These are the four tracked guides.
 
 ## Monorepo boundaries
 
@@ -8,6 +8,7 @@ This document consolidates architecture decisions, maps/NCR scope, seed research
 | --- | --- | --- |
 | `apps/api` | Application service, HTTP/Lambda adapters, sessions, directions and geocoding | Runtime validation at entry; trusted server configuration only; no browser credentials |
 | `apps/web` | Search, trip state, tile projection, route/report overlays and interactions | Consumes shared contracts; does not call ORS directly |
+| `apps/deploy` | AWS deployment configuration, identity checks, secrets, publication and smoke tests | Private settings ignored; CLI transports mocked in tests; no automatic deletion |
 | `packages/domain` | Shared contracts, input validation, errors and safety policy | Pure domain functions; no transport/storage dependency |
 | `packages/data` | Store interface, SQLite/DynamoDB/S3 adapters and labelled seeds | Revisioned snapshot contract; storage-specific implementation isolated |
 | `packages/routing` | Reusable Haversine/segment geometry | No road graph, importer or network transport |
@@ -111,21 +112,23 @@ Photos are separate from the snapshot transaction; upload before a failed mutati
 
 ## AWS integration and configuration
 
-The [SAM template](../infra/template.json) declares 13 resources: report table, web/photo buckets, HTTP API, Lambda, log group, CloudFront OAC/cache/origin/header policies, distribution and web-bucket policy.
+The [SAM template](../infra/template.json) declares 20 resources: application storage, API/compute and CloudFront resources plus SNS alert delivery, three Lambda alarms and an account-wide monthly budget. SAM creates additional supporting resources. The [deployment guide](DEPLOYMENT.md) covers the automated `us-east-1` release.
 
 | Concern | Implemented configuration |
 | --- | --- |
-| Compute | Node.js 24 ARM64 Lambda, `index.handler`, 2,048 MB, 25-second timeout, reserved concurrency 5 |
+| Compute | Node.js 24 ARM64 Lambda, `index.handler`, configurable memory default 2,048 MB, 25-second timeout; reservation omitted by default |
 | Gateway | HTTP API `$default`, `ANY /api/{proxy+}`, burst 20/rate 10 throttling |
 | Static delivery | Private encrypted S3 web bucket read only through CloudFront OAC |
 | API delivery | `/api/*` HTTPS-only origin path; cache TTLs zero; cookies/query strings and required JSON/application headers forwarded |
 | Reports | Encrypted on-demand DynamoDB, PITR, deletion/update retention |
 | Photos | Private encrypted S3, prefix-scoped runtime IAM, 30-day lifecycle, retention policies |
-| Diagnostics | Lambda log group retention 14 days; no automatically configured alarm resources |
-| Secrets | NoEcho parameters to server environment; managed lifecycle configured separately |
+| Diagnostics | 14-day logs, errors/throttles/duration alarms, SNS email and account-wide budget warnings |
+| Secrets | Script-managed Secrets Manager versions passed through NoEcho references to server environment |
 | Output | Website URL, web-bucket name, distribution ID, raw API URL |
 
-The compiled Lambda artifact is `dist/lambda`, referenced relative to `infra/template.json`; frontend `dist/web` must be uploaded separately. The storage adapter uses AWS Signature V4 with temporary execution-role credentials. There is no runtime Secrets Manager read. Domain/ACM/Route53 resources, WAF, alarms and managed secrets are not created by the current template.
+The compiled Lambda artifact is `dist/lambda`, referenced relative to `infra/template.json`. `apps/deploy` orchestrates dependency installation, quality gates, SAM lint/deployment, private `dist/web` uploads with explicit MIME types, invalidation and HTTPS smoke checks. Deployment runs with `npm run deploy:aws` using ignored `.env.deploy`; the blank example and guide are tracked. Tools, approved account permissions, login and email confirmation still require user setup.
+
+The storage adapter uses AWS Signature V4 with temporary execution-role credentials. There is no runtime Secrets Manager read. The script creates/reuses a tagged secret outside CloudFormation and pins its version in the Lambda parameters, updating configuration when keys change. Blank session-secret configuration preserves the generated signing secret. Domain/ACM/Route53 and WAF resources are not created. Budget warnings do not prevent charges, and retained resources/managed secrets can continue costing money after stack deletion.
 
 Structural checks verify repository assumptions, not complete CloudFormation schemas. Install SAM and run `sam validate --template-file infra/template.json --lint` before deploying. Fresh accounts may need regional Lambda quota changes. No live AWS acceptance was performed as part of the repository audit.
 
@@ -152,6 +155,7 @@ npm run test:http
 | Hotspots | Variable counts, road-coordinate provenance, count-preserving zoom aggregation, monotonic intensity, click-only case drill-down |
 | Larger snapshots | Full-catalogue compressed storage, legacy reads, conditional-write preservation and response-size bounds |
 | HTTP integration | Real local endpoints with temporary SQLite and intercepted ORS; malformed input and error envelopes |
+| Deployment | Configuration rejection, account/approval checks, secret-file cleanup/reuse, version references, output targeting and ordered mocked release failures |
 
 GitHub Actions repeats automated gates on `ubuntu-latest` and `windows-latest` with Node 24. Transport mocks exist in tests only, and integration tests must not touch the user's `.data` store or call paid routing APIs.
 
@@ -169,7 +173,7 @@ Browser/device QA must separately cover keyboard combobox navigation, touch pan/
 - ORS keys stay server-side. Stops/avoidance polygons go to ORS, search text to Photon and viewed tile areas to the tile provider. No application route history is persisted; short-lived caches still contain transient trip data.
 - JPEG/PNG uploads are limited to 1 MB and checked for signatures; this is not a full malware/content-moderation or EXIF-privacy pipeline. Add production controls deliberately.
 - Independent nearby votes and persisted actor budgets discourage accidental repetition but do not defeat spoofed location or multiple identities.
-- `.env`, `.data`, generated output, private-key files, AWS/SAM local configuration and the deployment runbook stay outside Git.
+- `.env`, `.env.deploy`, `.deploy`, `.data`, generated output, private-key files and AWS/SAM local configuration stay outside Git. The generic deployment guide and blank example are tracked.
 
 ## Release checklist
 

@@ -11,6 +11,7 @@ PaaniPath helps road users compare routes against reported waterlogging instead 
 - [Data structures and algorithms](docs/ALGORITHMS.md): implemented algorithms, pseudocode, complexity, invariants, worked example, research context and evaluator walkthrough.
 - [API contract](docs/API.md): endpoints, requests, responses, errors and session behavior.
 - [Engineering guide](docs/ENGINEERING.md): monorepo boundaries, tests, security, AWS integration, seed provenance and design decisions.
+- [AWS deployment](docs/DEPLOYMENT.md): one-command Northern Virginia release, private configuration, monitoring and recovery.
 
 ## What it does
 
@@ -184,15 +185,29 @@ flowchart LR
 | CloudFront | Same-origin website/API access, web caching, API cache TTLs zero, HTTPS and response security headers |
 | S3 web bucket | Compiled `dist/web` assets; private origin access control, no public website bucket |
 | API Gateway | HTTP API `$default` stage; `ANY /api/{proxy+}` to Lambda, rate/burst throttling |
-| Lambda | Shared application through `apps/api/src/lambda.ts`; 2,048 MB, 25 s timeout, reserved concurrency 5 |
+| Lambda | Shared application through `apps/api/src/lambda.ts`; configurable memory (default 2,048 MB), 25 s timeout, optional reserved concurrency |
 | DynamoDB | On-demand encrypted table, consistent reads and conditional writes; PITR and retention policies |
 | S3 photo bucket | Server-mediated JPEG/PNG storage under `photos/`; private, encrypted, 30-day expiration |
 | IAM | Function-scoped DynamoDB item access, photo-prefix object access and logging permissions |
-| CloudWatch | Lambda logs and operational diagnosis; alarms require separate configuration |
+| CloudWatch / SNS | 14-day Lambda logs, errors/throttles/duration alarms and email subscription |
+| AWS Budgets | Account-wide monthly cost budget and email warnings, not a spending cap |
+| Secrets Manager | Deployment script creates/reuses a tagged runtime secret with version-pinned references |
 
-AWS runtime credentials come from the Lambda execution role. The storage adapter signs requests with AWS Signature V4 and does not ship AWS credentials to the browser. `SessionSecret` and `OrsApiKey` are `NoEcho` parameters mapped to Lambda environment variables; a managed secret lifecycle must be configured separately. Secrets Manager and custom-domain certificates are **not resources in the current template**.
+AWS runtime credentials come from the Lambda execution role. The storage adapter signs requests with AWS Signature V4 and does not ship AWS credentials to the browser. The deployment script passes version-pinned Secrets Manager references through `NoEcho` parameters into Lambda environment variables. The managed secret exists outside the application stack and is retained independently; custom-domain certificates are not provisioned.
 
-Deployment has two stages: build/package/deploy the template and Lambda artifact, then upload `dist/web` to the output web bucket and invalidate CloudFront. The template outputs `WebsiteUrl`, `WebBucketName`, `DistributionId` and `ApiUrl`. Public API access, regional quotas, provider connectivity and storage must be acceptance-tested before launch. The detailed account-specific deployment runbook is intentionally excluded from version control.
+The automated release targets **Northern Virginia (`us-east-1`)**: checks and SAM deployment, then private web uploads, CloudFront invalidation and public smoke checks. The template outputs `WebsiteUrl`, `WebBucketName`, `DistributionId` and `ApiUrl`. Install AWS CLI v2/SAM and configure an approved AWS profile first, then:
+
+```powershell
+if (-not (Test-Path -LiteralPath .env.deploy)) {
+  Copy-Item -LiteralPath .env.deploy.example -Destination .env.deploy
+}
+# Fill account ID, profile, alert email and ORS key privately.
+# Set DEPLOY_APPROVED=true after reviewing costs and permissions.
+npm run deploy:aws -- --plan
+npm run deploy:aws
+```
+
+The [complete deployment guide](docs/DEPLOYMENT.md) is tracked; `.env.deploy` and generated `.deploy` files are ignored. Confirm the SNS email subscription and perform browser/mobile acceptance after deployment. Local SQLite data is not migrated automatically.
 
 ## Routing and algorithms
 
@@ -216,7 +231,8 @@ ORS car access rules approximate scooter/motorbike/auto requests; bus requests u
 PaaniPath/
 ├── apps/
 │   ├── api/                 Application, sessions, providers, local/Lambda adapters
-│   └── web/                 Map, trip editor, search, reporting, styles, PWA shell
+│   ├── web/                 Map, trip editor, search, reporting, styles, PWA shell
+│   └── deploy/              Typed AWS release orchestration, secrets and smoke checks
 ├── packages/
 │   ├── domain/              Types, input validation, safety/freshness policy
 │   ├── data/                NCR seeds, Store interface, SQLite/DynamoDB/S3 adapters
@@ -225,14 +241,15 @@ PaaniPath/
 ├── tests/                   Domain, provider, storage, map, UI and API tests
 ├── scripts/                 Portable build, lint, testing and validation tools
 ├── infra/                   AWS SAM template
-├── docs/                    Algorithms, API and Engineering (three tracked docs)
+├── docs/                    Algorithms, API, Engineering and Deployment (four docs)
 ├── .github/workflows/       Linux/Windows quality gates
-├── .env.example             Blank-key configuration example
+├── .env.example             Blank-key local configuration example
+├── .env.deploy.example      Blank private AWS deployment settings template
 ├── Dockerfile               Non-root local/container hosting
 └── package.json             npm workspaces and project commands
 ```
 
-`dist/`, `node_modules/`, `.data/` and the local deployment runbook are intentionally untracked. No obsolete UI/mockup/problem-statement/backend folder is required by the build.
+`dist/`, `node_modules/`, `.data/`, `.env.deploy` and `.deploy/` are intentionally untracked. No obsolete UI/mockup/problem-statement/backend folder is required by the build.
 
 ## Quality and verification
 
@@ -267,6 +284,6 @@ For a deployed smoke test, set `TEST_BASE_URL` to its HTTPS hostname before `npm
 
 ## Contributing and release hygiene
 
-Use focused conventional commits such as `feat(api): ...`, `fix(routing): ...`, `test(storage): ...` and `docs(project): ...`. Run both quality commands before proposing changes. Include tests for behavioral changes and update the relevant one of the three docs. Keep unrelated modifications separate; never commit `.env`, reports/photos, private keys, generated builds or account-specific deployment settings.
+Use focused conventional commits such as `feat(api): ...`, `fix(routing): ...`, `test(storage): ...` and `docs(project): ...`. Run both quality commands before proposing changes. Include tests for behavioral changes and update the relevant one of the four docs. Keep unrelated modifications separate; never commit `.env`, reports/photos, private keys, generated builds or account-specific deployment settings.
 
 This repository does not currently declare an open-source license. Do not infer redistribution permission from public hosting; the owner should choose a license deliberately.

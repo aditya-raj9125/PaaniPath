@@ -4,9 +4,9 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { dirname, resolve, relative } from 'node:path';
 
 const root = process.cwd();
-const publicDocs = ['API.md', 'ALGORITHMS.md', 'ENGINEERING.md'];
-const entries = (await readdir('docs')).filter(name => name.endsWith('.md') && name !== 'DEPLOYMENT.md').sort();
-assert.deepEqual(entries, [...publicDocs].sort(), 'Keep exactly three consolidated public docs.');
+const publicDocs = ['API.md', 'ALGORITHMS.md', 'ENGINEERING.md', 'DEPLOYMENT.md'];
+const entries = (await readdir('docs')).filter(name => name.endsWith('.md')).sort();
+assert.deepEqual(entries, [...publicDocs].sort(), 'Keep exactly four consolidated public docs.');
 const files = ['README.md', ...publicDocs.map(name => `docs/${name}`)];
 const content = new Map(await Promise.all(files.map(async file => [resolve(file), await readFile(file, 'utf8')])));
 const marker = String.fromCharCode(96).repeat(3);
@@ -37,7 +37,6 @@ for (const [file, text] of content) {
     assert(!match[1].includes(';'), `Use commas/words instead of raw semicolons in Mermaid text: ${relative(root, file)}`);
     diagrams++;
   }
-  assert(!text.includes('docs/DEPLOYMENT.md'), 'Do not link an ignored deployment guide from public docs.');
   for (const match of text.matchAll(/\]\(([^\s)]+)\)/g)) {
     const link = match[1];
     if (/^(https?:|mailto:)/.test(link)) continue;
@@ -52,4 +51,4 @@ for (const [file, text] of content) {
     links++;
   }
 }
-console.log(`Documentation passed: README, three public docs, ${links} local links and heading targets; ${diagrams} Mermaid text guards passed (not full rendering validation).`);
+console.log(`Documentation passed: README, four public docs, ${links} local links and heading targets; ${diagrams} Mermaid text guards passed (not full rendering validation).`);
