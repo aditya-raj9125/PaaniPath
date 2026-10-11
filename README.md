@@ -23,6 +23,7 @@ PaaniPath helps road users compare routes against reported waterlogging instead 
 | Vehicle assumptions | Scooter, motorbike, car, auto and bus depth classifications; configurable marginal/damaging thresholds |
 | Community observations | Depth reports, proximity-based duplicate merging, nearby independent votes, freshness and optional photos |
 | Map focus | Selecting a result centres the map; returned/selected routes fit their complete geometry |
+| Hotspot intensity | Count-based blue density areas, zoom aggregation, count-only hover/focus and explicit View cases drill-down |
 | Responsive experience | Desktop/mobile layouts, keyboard place selection, touch map interactions and visible error states |
 | PWA shell | App-asset caching and a bounded pending-report queue; no offline maps or routing |
 
@@ -65,7 +66,15 @@ Open **http://localhost:3000**. For rebuild/watch development, use `npm run dev`
 
 ### Demo data is not live incident data
 
-Seed mode initializes a catalogue of **320 simulated observations**: 224 general NCR scenarios and 96 near 24 historically reported Gurugram hotspots. Research links establish historical locations—not present-day floods, measured depths or exact road coordinates. Pins, ages and depths are approximate/simulated and can influence routing. Existing stores receive a versioned seed upgrade preserving community records and matching seed votes/freshness, subject to capacity. See [provenance and upgrade behavior](docs/ENGINEERING.md#seed-data-and-provenance).
+Seed mode initializes **500 irregular hotspots with 6,505 simulated cases**, varying from 6–20 cases per hotspot; 150 hotspots are in Gurugram. Every case coordinate was returned by OpenRouteService's road-snapping API (driving-car graph dated 21 September 2026), rather than created by off-road coordinate offsets. Counts, depths and freshness are simulated—not actual incident evidence. After a route is selected, the map shows nearby case-density hotspots; hover/focus shows the count, and **View cases** reveals individual road-positioned pins. Zoomed-out aggregation prevents marker overlap. Higher intensity means more cases, not greater flood depth or guaranteed risk. A one-time seed-version upgrade replaces old offset seeds while preserving community records and matching new-catalogue votes/freshness. See [provenance and upgrade behavior](docs/ENGINEERING.md#seed-data-and-provenance).
+
+### Judge-demo journeys
+
+The map is **hotspot-free until a route is ready**. It then shows only hotspots whose centre or an active case lies within **750 m of the selected route**. Switching route cards updates this corridor; editing/clearing the trip hides hotspots again. Full hotspot counts are preserved for intensity and drill-down. This display filter does not remove reports or limit routing risk evaluation.
+
+The planner starts with **empty A/B fields and the full NCR map**; it makes no automatic directions request. Above search, choose **Journey 1–10**: seven direct trips, two trips with one intermediate stop, and one trip with two stops. Selecting a journey fills editable locations and requests real API routes using the car profile, a 2× detour allowance and fixed stop order. Complete a manual trip to route automatically, or use the compare button to retry. Choosing **Plan your own trip** clears the fields and returns to NCR.
+
+The map smoothly pans/zooms to fit both candidate routes and all stops, with cancellable animation and reduced-motion support. Avoidance requests include risky reports within 2 km of baseline routes; every candidate is still scored against all reports, including outside that corridor. Seeds must be enabled to demonstrate simulated hotspots; routes remain live and depend on credentials, quota, current reports and provider availability. See the [journey catalogue and demo checklist](docs/ENGINEERING.md#judge-demo-journeys).
 
 ## Architecture
 
@@ -144,7 +153,7 @@ classDiagram
     putPhoto(id, photo)
     getPhoto(id)
   }
-  Snapshot "1" --> "0..400" Spot
+  Snapshot "1" --> "0..10000" Spot
   Store --> Snapshot
   SqliteStore ..|> Store
   DynamoStore ..|> Store
@@ -251,7 +260,7 @@ For a deployed smoke test, set `TEST_BASE_URL` to its HTTPS hostname before `npm
 - ORS receives stops and avoidance polygons; Photon receives search text; tile requests reveal the viewed map area to the tile service.
 - Reports/photos are stored; route histories are not persisted by the application. The 30-second per-process route cache is transient.
 - Mutations require JSON and `X-PaaniPath: 1`; signed cookies, validation, bounded payloads and nearby-vote checks reduce accidental misuse but do not replace production authentication/moderation.
-- Current report storage is capped at 400 observations; DynamoDB payloads are limited below 350,000 bytes. This single-snapshot pilot must be partitioned for larger deployments.
+- Current report storage is capped at 10,000 observations; gzip/base64 DynamoDB payloads must remain below 350,000 bytes. Legacy uncompressed snapshots remain readable. This single-snapshot pilot must be partitioned for larger deployments.
 - Provider calls have deadlines, bounded comparison concurrency and per-process budgets/caches. Multiple Lambda instances require a durable shared quota limiter.
 - Point buffers may block parallel roads or bridges; proximity scoring cannot distinguish elevation/road-level topology. Missing reports mean unknown conditions, not dry roads.
 - Public tile/geocoding services provide no application SLA. Respect [OSM tile usage policy](https://operations.osmfoundation.org/policies/tiles/) and provision appropriate production services.

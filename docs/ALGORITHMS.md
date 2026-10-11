@@ -17,7 +17,9 @@ We optimize over **returned candidates only**, not every path in the road networ
 | Readonly coordinate tuple `[lat,lng]` | `packages/domain/src/types.ts` | Stable app convention; convert explicitly to GeoJSON/ORS `[lng,lat]` at boundaries |
 | Ordered `Place[]` | Route request / trip editor | Preserves waypoint order; 2–4 entries; origin and destination fixed during optimization |
 | Polyline `Coordinates[]` | Provider `RouteOption.geometry` | Sequential segment traversal; validated 2–200,000 points per returned feature |
-| Report `Spot[]` | `Snapshot.spots` | Simple bounded scans and predictable serialization; maximum 400 reports |
+| Report `Spot[]` | `Snapshot.spots` | Predictable serialization; maximum 10,000 observations, plus compressed-byte bounds |
+| Geographic point grid | `packages/routing/src/spatial.ts` | 0.005-degree cells narrow proximity checks; conservative segment boxes and exact distance filtering |
+| Hotspot/group maps | `apps/web/src/hotspots.ts` | Linear case grouping and screen-space aggregation; counts preserved across zoom |
 | Four-component score | `RouteOption.score` | Transparent lexicographic comparison without arbitrary weighted-unit conversion |
 | GeoJSON MultiPolygon | `avoidancePolygons` | One closed square per avoided report; consumable by hosted directions |
 | `Map<string, cacheEntry>` | `ApiRouting` | Maximum 64 entries, 30-second success TTL; insertion-order eviction, **not LRU** |
@@ -29,7 +31,7 @@ We optimize over **returned candidates only**, not every path in the road networ
 | Revision number / CAS | Store interface | Detects conflicting writers; SQLite conditional UPDATE and DynamoDB conditional PutItem |
 | Pending-report array | Browser localStorage | At most 10 unsent reports, replayed sequentially |
 
-No adjacency list, edge-cost heap, union-find, local road graph or road-network spatial index remains in this implementation. `edgeIds=[]`, `expanded=0`, and compatibility graph metadata are not evidence of local graph search. The public response omits private reporter IDs and vote maps.
+No adjacency list, edge-cost heap, union-find or local road graph remains. The spatial grid indexes report points, not road-network topology. `edgeIds=[]`, `expanded=0`, and compatibility graph metadata are not evidence of local graph search. The public response omits private reporter IDs and vote maps.
 
 ## 3. Candidate-planning algorithm
 
@@ -50,7 +52,7 @@ plan(trip, snapshot, now):
             append [0, 2, 1, 3]
         baselines := provider fastest directions for each order
         fastest := baseline with minimum estimated duration
-        avoided := active damaging, marginal or stale reports
+        avoided := active damaging, marginal or stale reports within 2 km of any baseline segment
         detours := provider avoidance directions for each order if avoided nonempty
         only documented avoidance NO_ROUTE may omit a detour with a warning
         budget := fastest.duration * detourFactor
@@ -73,7 +75,8 @@ flowchart TD
   Cache -->|Yes| Return[Return provider-derived comparison]
   Cache -->|No| Orders[Enumerate 1 or 2 fixed-endpoint orders]
   Orders --> Base[Request baselines]
-  Reports[Classify active reports] --> Avoid[Construct approximate polygons]
+  Reports[Classify active reports] --> Avoid[Filter baseline corridor and construct polygons]
+  Base --> Avoid
   Base --> Detours[Request avoidance candidates when needed]
   Avoid --> Detours
   Detours --> Budget[Filter by minimum baseline detour budget]
@@ -105,7 +108,9 @@ ring = [(lng-dx,lat-dy), (lng+dx,lat-dy),
         (lng+dx,lat+dy), (lng-dx,lat+dy), firstPoint]
 ```
 
-The result is a MultiPolygon in GeoJSON order. Buffer construction is `O(n)` time/space. These ~120 m-wide squares are approximate uncertainty zones, not surveyed flood extents, circles or road-level closures. A nearby bridge/parallel carriageway can be blocked incorrectly. The 85 m exposure threshold differs from the 60 m square half-width, so avoidance and scoring are not equivalent predicates.
+The result is a MultiPolygon in GeoJSON order. Candidate generation first queries the report grid around every baseline segment and exact-filters risky/stale reports within **2,000 m**, deduplicating their IDs. This avoids sending thousands of unrelated NCR-wide polygons for a local trip. Polygon construction is `O(a)` time/space for the selected `a` reports. Corridor querying has the same grid-query/exact-distance structure as exposure scoring below, but a wider radius. It is not a flood boundary or complete search: a detour beyond this corridor may encounter additional hazards. **Every candidate is still scored against all active reports**, including those excluded from avoidance, and the warning discloses the corridor limitation.
+
+These ~120 m-wide squares are approximate uncertainty zones, not surveyed flood extents, circles or road-level closures. A nearby bridge/parallel carriageway can be blocked incorrectly. The 85 m exposure threshold differs from the 60 m square half-width, so avoidance and scoring are not equivalent predicates.
 
 ## 5. Geographic proximity and exposure scoring
 
@@ -122,7 +127,7 @@ distance = norm(a + t*d) * π/180 * EarthRadius
 
 Clamping handles the segment endpoints; zero-length segments are safe. This is an approximation for short local geometry segments, not exact spherical point-to-geodesic distance or road map matching.
 
-For each candidate, a report is a hit if **any** segment is within 85 m. Filtering reports once means a report near many segments or revisited legs still contributes only once:
+For each candidate, a report is a hit if **any** segment is within 85 m. A conservative grid query retrieves potential points from each segment's expanded bounding box; the same exact distance predicate filters survivors. A hit-ID Set avoids repeated counting, and filtering the source report array preserves stable result order. Very long/polar boxes fall back to all reports rather than dropping observations. A report near many segments or revisited legs still contributes once:
 
 ```text
 damaging = count(hits classified damaging)
@@ -148,14 +153,16 @@ The rank tuple prioritizes fewer damaging reports over all other dimensions, the
 
 ## 6. Complexity and bounds
 
-Let `k` be stops (≤4), `o` orders (≤2), `c` returned candidates (≤4), `n` active reports (≤400), `s` maximum geometry segments per candidate (≤199,999), and `L` bytes of a serialized geometry. Let `q` be search results and `p` saved places.
+Let `k` be stops (≤4), `o` orders (≤2), `c` returned candidates (≤4), `n` active reports (≤10,000), `a` corridor-selected avoidance reports (≤n), `s` maximum geometry segments per candidate (≤199,999), and `L` bytes of a serialized geometry. Let `q` be search results and `p` saved places. For grid queries let `G` be visited grid cells and `H` be candidate point visits across a route's segments (different radii produce different `G,H`).
 
 | Operation | Worst-case local time | Additional space / caveat |
 | --- | --- | --- |
 | Stop distinctness | `O(k²)` | `O(1)` |
-| Classification/buffers | `O(n)` | `O(n)` |
+| Classification / selected buffers | `O(n+a)` | `O(n+a)` |
+| Baseline avoidance corridor | Expected `O(n + o*(G+H))`; worst case `O(o*n*s)` | `O(n)` grid and unique-ID Set |
 | Provider parsing | `O(c*s)` | `O(c*s)` stored geometry; network latency outside local complexity |
-| Exposure scoring | `O(c*n*s)` | `O(n)` hit list per candidate; segment traversal short-circuits on first hit |
+| Grid construction | Expected `O(n)` | `O(n)` point buckets |
+| Exposure scoring | Expected `O(n + c*(G+H+n))`; worst case `O(c*n*s)` | `O(n)` hit-ID Set; long-segment fallback preserves correctness |
 | Sort | `O(c log c)` | Sort implementation overhead; c is small |
 | Exact geometry deduplication | `O(c²*L)` | Repeated JSON serialization, not an O(1) hash lookup |
 | Cache key construction | `O(requestBytes+n)` | Full serialized request/classification key |
@@ -164,9 +171,9 @@ Let `k` be stops (≤4), `o` orders (≤2), `c` returned candidates (≤4), `n` 
 | Search-result dedup | Expected `O(q)` membership operations plus string construction | `O(q)` keys; hash-map complexity is expected, not a universal strict bound |
 | CAS report mutation | `O(n+rateLimitData)` per retry plus serialization | Up to 5 attempts and storage round trips; global snapshot contention |
 
-Bounding count does not make worst-case geometry scoring cheap: up to four 200,000-point geometries against 400 reports is still substantial work. The route cache is bounded by entries, **not serialized bytes**; maximum-size responses can consume significant memory. No benchmark claim is made for this maximum input.
+Bounding count does not make worst-case geometry scoring cheap: long-segment fallback/dense cells can still approach scanning 10,000 reports per segment. The route cache is bounded by entries, **not serialized bytes**; maximum-size responses can consume significant memory. No benchmark claim is made for this maximum input. Grid equivalence tests compare indexed and exhaustive proximity checks, including cell boundaries, repeated points and long segments.
 
-Scalability proposal, **not implemented**: segment bounding boxes in an R-tree or spatial grid, querying only nearby reports, exact distance on survivors, precomputed geometry fingerprints, byte-budgeted caches, regional report partitions and shared quota coordination. Preserve scoring semantics with equivalence tests before optimizing.
+Implemented: conservative report-point grid with exact distance filtering, plus gzip/base64 snapshots that keep the 6,505-case catalogue within the pilot's byte limit. Further proposals, **not implemented**: R-tree indexing, precomputed geometry fingerprints, byte-budgeted route caches, regional report partitions and shared quota coordination. Compression reduces stored bytes, not global snapshot contention.
 
 ## 7. Cache correctness and request budgets
 
@@ -204,7 +211,15 @@ sequenceDiagram
 
 SQLite uses WAL and conditional writes; DynamoDB uses `ConsistentRead` and an expected-revision condition. Initial creation requires absence. Up to five attempts precede an explicit conflict/unavailability error. This prevents overwriting a concurrent committed snapshot when callers obey the Store contract; it is not a multi-resource transaction. Photo upload occurs before snapshot saving, so a failed report write can leave an orphan photo. S3 lifecycle helps bound retention but is not atomic rollback. The current capacity check happens before duplicate merging, so a full store rejects report submissions even when they might merge.
 
-Seed reconciliation is versioned and CAS-protected: community records are retained, matching seed votes/clear status/timestamps are preserved, and researched Gurugram seeds receive capacity priority. The scenario count can therefore be below 320 in an existing busy store.
+Seed reconciliation is versioned and CAS-protected: community records are retained, old offset seeds are replaced, and matching new-catalogue votes/clear status/timestamps survive. The catalogue contains 500 clusters/6,505 cases; capacity can reduce counts in a busy store.
+
+### Road-snapped hotspot curation and display
+
+The display corridor is independently filtered at 750 m around the selected route. A grid indexes each hotspot centre and its active case coordinates; exact segment checks accumulate qualifying group IDs in a Set. Complete groups are retained rather than truncating density counts. With no valid route geometry, the result is empty. This changes rendering only: route exposure and avoidance retain their separate scoring rules. Grid construction/grouping is expected `O(n+h)`; corridor queries cost visited cells/candidate visits plus exact checks, with worst-case `O(s*(n+h))` for dense/long segments.
+
+A deterministic pseudorandom generator proposes irregular anchors/cases around NCR regions, with a fixed 6–20 count range and extra Gurugram allocation. Final coordinates come exclusively from the provider snap response; failed snaps, excessive distances and duplicate nearby coordinates are rejected before emission. This is reproducible synthetic-case curation on real mapped roads, not invented road geometry or historical incident verification.
+
+Case grouping is `O(n)` expected Map operations. Screen-space grid aggregation is `O(h+n)` for `h` hotspot groups and preserves all case counts; zooming separates groups. The count-to-radius/opacity functions are monotone up to saturation at 20 cases. Overview aggregates can contain more than 20 cases and use saturated intensity plus the exact count. Individual cases are only rendered after explicit drill-down, with no native title tooltip. This is density visualization, not a calibrated flood-risk estimator.
 
 ## 9. Map projection and viewport fitting
 

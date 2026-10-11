@@ -25,7 +25,7 @@ Unknown failures use `INTERNAL_ERROR` with a generic message. Credentials/provid
 | Method/path | Purpose / input | Success |
 | --- | --- | --- |
 | `GET /api/health` | Process health; identifies `openrouteservice`, not upstream readiness | 200 |
-| `GET /api/bootstrap` | Metadata, saved places, profiles, visible reports, revision and actor identity | 200 |
+| `GET /api/bootstrap` | Metadata, saved places, ten demo journeys, profiles, visible reports, revision and actor identity | 200 |
 | `GET /api/reports` | Public reports and revision for polling | 200 |
 | `POST /api/places/search` | `{query,online}`; 2–120 character text; `online:true` requests Photon | 200 |
 | `POST /api/routes` | 2–4 locations, profile, detourFactor and optimizeOrder | 200 |
@@ -33,6 +33,12 @@ Unknown failures use `INTERNAL_ERROR` with a generic message. Credentials/provid
 | `POST /api/reports/:id/vote` | `{action:"confirm"|"dismiss",coords?,demo?}` | 200 |
 | `GET /api/photos/:id` | UUID photo identifier | 200 JPEG/PNG bytes; private caching |
 | `POST /api/demo` | `{action:"reset"}`; requires explicit `DEMO_MODE=true` | 200 |
+
+### Demo journey catalogue
+
+Bootstrap includes `journeys`, an array of `{id,title,locations}` using the shared `DemoJourney` contract. Seven entries have two locations, two have three, and one has four. The catalogue supplies only editable stop coordinates; it does not issue directions requests or contain route geometry. The browser starts with empty A/B fields, and selecting a preset submits the normal routing request. Catalogue presence does not imply seed mode is enabled or that reports remain fresh.
+
+Avoidance candidates use risky/stale reports within 2 km of provider baseline geometry. Exposure scoring always checks every report, including hazards encountered by detours outside that corridor; warnings disclose this candidate-generation limitation.
 
 ## Routing request
 
@@ -87,7 +93,9 @@ Report example: `{ "coords":[28.63,77.22], "depth":2, "name":"Test observation" 
 
 Reports within 65 m of active community observations may merge, preserving the maximum depth and adding an independent confirmation. An actor cannot merge its own report or confirm the same report twice. At current capacity, submissions fail before merge processing. Votes require nearby coordinates (≤500 m), except a labelled seeded-demo bypass when explicitly enabled. Clearing requires at least two dismissals and more dismissals than confirmations. Confirmations refresh freshness; stale means at least one hour since last confirmation.
 
-Public observations omit private reporter IDs/vote maps. Seeded observations retain simulated labels and historical references; do not display them as live incidents. Mutation conflicts, unavailable storage, capacity, invalid photos, own/duplicate votes and proximity violations return typed errors. Storage uses bounded optimistic retries, not multi-resource photo/report transactions.
+Public observations omit private reporter IDs/vote maps. Seeded observations retain simulated labels and provider-placement provenance; do not display them as live incidents. Mutation conflicts, unavailable storage, capacity, invalid photos, own/duplicate votes and proximity violations return typed errors. Storage uses bounded optimistic retries, not multi-resource photo/report transactions.
+
+Road-curated seed cases include optional `hotspot:{id,name,coords}` and `roadPlacement:{provider:"openrouteservice",graphDate,snapped:true}`. The current catalogue is 500 hotspots/6,505 cases; old offset pins are removed through a versioned upgrade. These fields document provider road placement, not verified flood conditions. Hotspot intensity/count and drill-down are client-side views of active observations, not additional API endpoints. DynamoDB snapshots now use gzip/base64 with legacy JSON read compatibility; the same revision/conditional-write contract remains.
 
 ## Search behavior
 
