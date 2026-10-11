@@ -38,7 +38,8 @@ export async function preflight(context: DeployContext): Promise<void> {
   context.log('Checking tools, AWS identity, target ownership and regional concurrency…');
   const version = await checked(context, 'aws', ['--version']);
   if (!version.includes('aws-cli/2.')) throw new Error('AWS CLI v2 is required.');
-  await checked(context, 'sam', ['--version']);
+  const samVersion = await checked(context, 'sam', ['--version']);
+  if (!/SAM CLI, version/i.test(samVersion)) throw new Error('The sam command is not AWS SAM CLI. Check SAM_CLI_PATH or install the official AWS SAM CLI.');
   const identity = await aws(context, ['sts', 'get-caller-identity']);
   if (identity.Account !== context.config.account) throw new Error('AWS account mismatch. Nothing was deployed; review credentials/AWS_ACCOUNT_ID.');
   if (String(identity.Arn).endsWith(':root')) throw new Error('Do not deploy with root-account credentials. Use an approved IAM/SSO deployment identity.');

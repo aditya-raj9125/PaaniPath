@@ -4,7 +4,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deploymentConfig, secretReference } from '../apps/deploy/src/config.ts';
-import { commandRunner, redact, windowsInvocation } from '../apps/deploy/src/commands.ts';
+import { commandRunner, redact, resolveWindowsCommand, windowsInvocation } from '../apps/deploy/src/commands.ts';
 import type { CommandResult, DeployContext, RunCommand } from '../apps/deploy/src/commands.ts';
 import { ensureSecret } from '../apps/deploy/src/secrets.ts';
 import { deploy, preflight, stackOutputs, samArguments } from '../apps/deploy/src/workflow.ts';
@@ -38,15 +38,39 @@ test('Windows command literals cannot expand shell payloads and log redaction hi
   const payload = "C:\\Aditya Raj\\$x';& echo token";
   const invocation = windowsInvocation('sam', ['--config-file', payload]);
   const source = Buffer.from(invocation[3] ?? '', 'base64').toString('utf16le');
-  assert(source.includes("'C:\\Aditya Raj\\$x'';& echo token'")); assert(source.endsWith('exit $LASTEXITCODE'));
+  assert(source.includes("'C:\\Aditya Raj\\$x'';& echo token'")); assert(source.includes('exit $LASTEXITCODE'));
+  assert(source.includes("$ErrorActionPreference = 'Stop'")); assert(source.includes('exit 1'));
+  assert(source.includes('$null -eq $LASTEXITCODE'));
   assert.equal(redact('key=secret secret', ['secret']), 'key=[REDACTED] [REDACTED]');
+});
+
+test('Windows tool resolution uses absolute PATH entries and supports explicit SAM paths with spaces', () => {
+  const sam = 'C:\\Program Files\\Amazon\\AWSSAMCLI\\bin\\sam.cmd';
+  const exists = (path: string): boolean => path === sam || path === 'C:\\Node\\npm.cmd';
+  assert.equal(resolveWindowsCommand('sam', { Path: 'relative;. ;"C:\\Program Files\\Amazon\\AWSSAMCLI\\bin"' }, exists), sam);
+  assert.equal(resolveWindowsCommand(sam, {}, exists), sam);
+  assert.equal(resolveWindowsCommand('npm', { PATH: 'C:\\Node' }, exists), 'C:\\Node\\npm.cmd');
+  assert.throws(() => resolveWindowsCommand('sam', { PATH: 'C:\\Missing' }, exists), /SAM_CLI_PATH/);
+  assert.throws(() => resolveWindowsCommand('C:\\Unsafe\\sam.ps1', {}, exists), /existing .exe/);
+  assert.equal(deploymentConfig(SOURCE + `SAM_CLI_PATH="${sam}"`).samPath, sam);
+  assert.throws(() => deploymentConfig(SOURCE + 'SAM_CLI_PATH=relative/sam'), /absolute/);
+});
+
+test('preflight rejects an unrelated sam executable before making any AWS identity or resource calls', async () => {
+  const calls: string[] = [];
+  const run: RunCommand = async (command, args) => {
+    calls.push(`${command}:${args[0]}`);
+    return { code: 0, stdout: command === 'aws' ? 'aws-cli/2.0' : 'unrelated-tool 1.0', stderr: '' };
+  };
+  await assert.rejects(preflight(context(run)), /not AWS SAM CLI/);
+  assert.deepEqual(calls, ['aws:--version', 'sam:--version']);
 });
 
 test('approval/account mismatch aborts before quality gates or AWS writes', async () => {
   const calls: string[] = [];
   const run: RunCommand = async (command, args) => {
     calls.push(`${command} ${args[0]}`);
-    if (command === 'sam') return success('sam version');
+    if (command === 'sam') return success('SAM CLI, version 1.150.0');
     if (args[0] === '--version') return { code: 0, stdout: 'aws-cli/2.0', stderr: '' };
     return success({ Account: '999999999999', Arn: 'arn:aws:iam::999999999999:user/demo' });
   };
@@ -102,6 +126,7 @@ test('mock deployment orders gates, secret provisioning, SAM, private upload, in
   try {
     const run: RunCommand = async (command, args) => {
       calls.push({ command, args });
+      if (command === 'sam' && args[0] === '--version') return success('SAM CLI, version 1.150.0');
       if (command === 'aws' && args[0] === '--version') return { code: 0, stdout: 'aws-cli/2.0', stderr: '' };
       if (args[0] === 'sts') return success({ Account: config.account, Arn: `arn:aws:iam::${config.account}:user/deployer` });
       if (args[1] === 'describe-stacks') return ++described === 1 ? { code: 1, stdout: '', stderr: 'ValidationError: Stack does not exist' } : success(output);
@@ -126,6 +151,7 @@ test('a failed local quality gate stops before secret/resource creation', async 
   const calls: string[] = [];
   const run: RunCommand = async (command, args) => {
     calls.push(`${command}:${args.join(',')}`);
+    if (command === 'sam' && args[0] === '--version') return success('SAM CLI, version 1.150.0');
     if (command === 'aws' && args[0] === '--version') return { code: 0, stdout: 'aws-cli/2.0', stderr: '' };
     if (args[0] === 'sts') return success({ Account: config.account, Arn: `arn:aws:iam::${config.account}:user/demo` });
     if (args[1] === 'describe-stacks') return { code: 1, stdout: '', stderr: 'ValidationError: Stack does not exist' };

@@ -1,9 +1,11 @@
 import { parseEnv } from 'node:util';
+import { isAbsolute, win32 } from 'node:path';
 
 export interface DeployConfig {
   readonly account: string;
   readonly region: string;
   readonly profile: string;
+  readonly samPath: string;
   readonly stack: string;
   readonly approved: boolean;
   readonly email: string;
@@ -22,7 +24,7 @@ export interface DeployConfig {
 
 const KEYS = new Set(['AWS_ACCOUNT_ID', 'AWS_REGION', 'AWS_PROFILE', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
   'DEPLOY_STACK_NAME', 'DEPLOY_APPROVED', 'DEPLOY_ALERT_EMAIL', 'DEPLOY_MONTHLY_BUDGET_USD', 'DEPLOY_MEMORY_MB',
-  'DEPLOY_RESERVED_CONCURRENCY', 'ORS_API_KEY', 'SESSION_SECRET', 'ORS_URL', 'PHOTON_URL', 'DEMO_MODE', 'SEED_MODE', 'DEPLOY_SMOKE_ROUTE']);
+  'DEPLOY_RESERVED_CONCURRENCY', 'ORS_API_KEY', 'SESSION_SECRET', 'ORS_URL', 'PHOTON_URL', 'DEMO_MODE', 'SEED_MODE', 'DEPLOY_SMOKE_ROUTE', 'SAM_CLI_PATH']);
 
 function requireValue(valid: boolean, message: string): void { if (!valid) throw new Error(message); }
 function numeric(env: NodeJS.Dict<string>, key: string, fallback: number, minimum: number, maximum: number): number {
@@ -51,6 +53,8 @@ export function deploymentConfig(source: string): DeployConfig {
   const account = env.AWS_ACCOUNT_ID ?? '';
   const region = env.AWS_REGION || 'us-east-1';
   const profile = env.AWS_PROFILE ?? '';
+  const samPath = env.SAM_CLI_PATH ?? '';
+  requireValue(!samPath || isAbsolute(samPath) || win32.isAbsolute(samPath), 'SAM_CLI_PATH must be blank or an absolute executable path.');
   const stack = env.DEPLOY_STACK_NAME || 'paanipath-ncr';
   const email = env.DEPLOY_ALERT_EMAIL ?? '';
   requireValue(/^\d{12}$/.test(account), 'AWS_ACCOUNT_ID must be the expected 12-digit deployment account.');
@@ -70,7 +74,7 @@ export function deploymentConfig(source: string): DeployConfig {
   requireValue(Boolean(credentials.AWS_ACCESS_KEY_ID) === Boolean(credentials.AWS_SECRET_ACCESS_KEY), 'AWS access-key ID and secret must be provided together.');
   requireValue(!credentials.AWS_SESSION_TOKEN || Boolean(credentials.AWS_ACCESS_KEY_ID), 'AWS_SESSION_TOKEN requires the access-key pair.');
   requireValue(!profile || !credentials.AWS_ACCESS_KEY_ID, 'Choose an AWS profile OR environment credentials, not both.');
-  return { account, region, profile, stack, email, orsKey, sessionSecret, memory, concurrency, credentials,
+  return { account, region, profile, samPath, stack, email, orsKey, sessionSecret, memory, concurrency, credentials,
     budget: numeric(env, 'DEPLOY_MONTHLY_BUDGET_USD', 10, 1, 100000), approved: boolean(env, 'DEPLOY_APPROVED', 'false') === 'true',
     orsUrl: endpoint(env.ORS_URL || 'https://api.openrouteservice.org/v2/directions', 'ORS_URL'),
     photonUrl: endpoint(env.PHOTON_URL || 'https://photon.komoot.io/api/', 'PHOTON_URL'),
