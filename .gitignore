@@ -9,6 +9,8 @@ __pycache__/
 .env
 .env.*
 !.env.example
+!.env.deploy.example
+.deploy/
 .aws-sam/
 /UI/
 /ProblemStatement.md
@@ -16,8 +18,7 @@ __pycache__/
 /data/ncr-graph.json
 /data/*.tmp
 
-# Local deployment runbook and machine/account configuration
-/docs/DEPLOYMENT.md
+# Local commit helper and machine/account configuration
 /scripts/prepare-commits.ps1
 /.aws/
 /.codex/

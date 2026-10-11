@@ -21,7 +21,8 @@
     "check": "npm run typecheck && npm run lint && npm test && npm run build && node scripts/validate-infra.mjs && npm run docs:check",
     "docs:check": "node scripts/validate-docs.mjs",
     "test:e2e": "node scripts/e2e.mjs",
-    "test:http": "node scripts/test-http.mjs"
+    "test:http": "node scripts/test-http.mjs",
+    "deploy:aws": "node scripts/deploy.mjs"
   },
   "devDependencies": {
     "@types/node": "25.1.0",
