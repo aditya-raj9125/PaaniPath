@@ -2,6 +2,18 @@
 
 This is a source-grounded evaluation writeup for PaaniPath. Start with [the README](../README.md) for product context and architecture. The implemented contribution is the report-aware orchestration, geometry, ranking, bounded caches and concurrent persistence around a hosted road-directions service—not a proprietary maps engine.
 
+> **Core contribution:** compare real provider routes against uncertain waterlogging observations, while enforcing the traveller's time allowance and making every limitation explicit.
+
+### Reading paths
+
+| Reader | Start here |
+| --- | --- |
+| Product reviewer | [Problem formulation](#1-problem-formulation), [ranking example](#ranking-example), [guarantees](#10-invariants-and-honest-guarantees) |
+| Algorithm evaluator | [Planning pipeline](#3-candidate-planning-algorithm), [geometry](#5-geographic-proximity-and-exposure-scoring), [complexity](#6-complexity-and-bounds) |
+| Implementation reviewer | [Data structures](#2-implemented-data-structures), [cache correctness](#7-cache-correctness-and-request-budgets), [concurrent writes](#8-reports-votes-and-optimistic-concurrency) |
+
+The following sections describe the implementation in stages and mathematical notation. Source links lead to executable code, rather than duplicating a large implementation listing here.
+
 ## 1. Problem formulation
 
 Input: 2–4 distinct locations, a vehicle profile, detour factor `f ∈ [1,3]`, an intermediate-order flag, a report snapshot and its revision/time. Output: up to three provider-derived routes with exposure scores, recommended/fastest flags and explicit limitations.
@@ -37,37 +49,26 @@ No adjacency list, edge-cost heap, union-find or local road graph remains. The s
 
 Source: [api-routing.ts](../apps/api/src/api-routing.ts).
 
-```text
-plan(trip, snapshot, now):
-    validate key and pairwise stop distances > 10 metres
-    active := reports that are neither cleared nor archived
-    classify active reports for the selected vehicle at now
-    key := serialize(trip, revision, each active report's id/verdict/depth)
-    if an unexpired cached response exists: return it
-    reject if two comparisons are already active in this process
-    increment active comparison count
-    try:
-        orders := [original order]
-        if four stops and optimization enabled:
-            append [0, 2, 1, 3]
-        baselines := provider fastest directions for each order
-        fastest := baseline with minimum estimated duration
-        avoided := active damaging, marginal or stale reports within 2 km of any baseline segment
-        detours := provider avoidance directions for each order if avoided nonempty
-        only documented avoidance NO_ROUTE may omit a detour with a warning
-        budget := fastest.duration * detourFactor
-        candidates := successful routes within budget + tolerance
-        score each candidate against all active reports
-        sort by (damaging, caution, worstDepth, duration)
-        deduplicate exactly identical geometry
-        selected := first two unique candidates
-        append scored fastest baseline if its geometry is absent
-        mark first as recommended; attach warnings and revision
-        cache successful response for 30 seconds
-        return selected
-    finally:
-        decrement active comparison count
+### Planning pipeline
+
+| Stage | Decision | Correctness safeguard |
+| --- | --- | --- |
+| **1 · Validate** | Require provider credentials and distinct selected stops, then classify active reports for the vehicle | Cleared/archived observations are excluded and stop separation exceeds 10 m |
+| **2 · Reuse or admit** | Check the request/revision/classification cache, otherwise reserve comparison capacity | A fresh cache hit returns immediately, at most two comparisons run per process |
+| **3 · Establish baselines** | Enumerate one or two fixed-endpoint orders and request fastest provider directions | The minimum returned baseline duration defines the common detour budget |
+| **4 · Generate alternatives** | Select risky/stale reports within 2 km of baselines and request polygon avoidance | Only documented avoidance `NO_ROUTE` can omit an alternative with a warning |
+| **5 · Evaluate** | Filter by the time budget and score candidates against every active report | Off-corridor hazards still count, each exposed report contributes once |
+| **6 · Select and explain** | Sort the score tuple, deduplicate geometry, choose the best two plus the baseline if absent | The first route is recommended, the baseline and uncertainty remain visible |
+| **7 · Finish** | Cache a successful comparison for 30 seconds and release capacity | Capacity is released in `finally`, including provider/validation failures |
+
+The eligibility rule is:
+
+```math
+T(r) \leq f\,T_0 + 0.001,
+\qquad T_0 = \min_{b \in \text{baselines}} T(b)
 ```
+
+Here **T(r)** is the provider's duration estimate and **f** is the user's detour factor. The tolerance is only for floating-point arithmetic. Recommendation uses lexicographic order, not a weighted combination that could trade a damaging exposure for a few seconds saved.
 
 ```mermaid
 flowchart TD
@@ -101,12 +102,13 @@ Default scooter/motorbike/auto thresholds are marginal level 2 and damaging leve
 
 For report `(lat,lng)`, buffer half-width in degrees is:
 
-```text
-dy = 60 / 111320
-dx = dy / max(0.01, cos(lat * π / 180))
-ring = [(lng-dx,lat-dy), (lng+dx,lat-dy),
-        (lng+dx,lat+dy), (lng-dx,lat+dy), firstPoint]
+```math
+\Delta\phi = \frac{60}{111320},
+\qquad
+\Delta\lambda = \frac{\Delta\phi}{\max(0.01,\cos(\phi\pi/180))}
 ```
+
+**Geometry:** form the four combinations of longitude ± Δλ and latitude ± Δφ, traverse the square's corners, and repeat the first point to close the ring. Serialize each coordinate as **[longitude, latitude]** for GeoJSON.
 
 The result is a MultiPolygon in GeoJSON order. Candidate generation first queries the report grid around every baseline segment and exact-filters risky/stale reports within **2,000 m**, deduplicating their IDs. This avoids sending thousands of unrelated NCR-wide polygons for a local trip. Polygon construction is `O(a)` time/space for the selected `a` reports. Corridor querying has the same grid-query/exact-distance structure as exposure scoring below, but a wider radius. It is not a flood boundary or complete search: a detour beyond this corridor may encounter additional hazards. **Every candidate is still scored against all active reports**, including those excluded from avoidance, and the warning discloses the corridor limitation.
 
@@ -120,21 +122,29 @@ Source: [geometry.ts](../packages/routing/src/geometry.ts).
 
 **Point-to-segment:** translate a short route segment relative to the report, scale longitude by `cos(reportLatitude)`, and use a local tangent-plane approximation. For vectors `a`, `b`, `d=b-a`:
 
-```text
-t = 0 if dot(d,d)=0 else clamp(-dot(a,d)/dot(d,d), 0, 1)
-distance = norm(a + t*d) * π/180 * EarthRadius
+```math
+t = \begin{cases}
+0 & \text{if } d\cdot d = 0 \\
+\operatorname{clamp}\!\left(-\frac{a\cdot d}{d\cdot d},0,1\right) & \text{otherwise}
+\end{cases}
+\qquad
+\operatorname{distance} = \lVert a+td\rVert\,\frac{\pi}{180}\,R
 ```
+
+**Interpretation:** project the report onto the segment, clamp the projection to its endpoints, then convert the scaled angular distance to metres. **R** is the Earth radius stated above.
 
 Clamping handles the segment endpoints; zero-length segments are safe. This is an approximation for short local geometry segments, not exact spherical point-to-geodesic distance or road map matching.
 
 For each candidate, a report is a hit if **any** segment is within 85 m. A conservative grid query retrieves potential points from each segment's expanded bounding box; the same exact distance predicate filters survivors. A hit-ID Set avoids repeated counting, and filtering the source report array preserves stable result order. Very long/polar boxes fall back to all reports rather than dropping observations. A report near many segments or revisited legs still contributes once:
 
-```text
-damaging = count(hits classified damaging)
-caution = count(hits classified marginal or stale)
-worstDepth = max(0, depths of all hits)
-duration = provider estimate
-```
+| Priority | Score component | Meaning |
+| --- | --- | --- |
+| **1** | Damaging exposures | Number of unique hits classified damaging |
+| **2** | Caution exposures | Number of unique hits classified marginal or stale |
+| **3** | Worst depth | Maximum qualitative depth among hits, or zero when there are none |
+| **4** | Travel time | Provider duration estimate in seconds |
+
+**Comparison rule:** minimize the first component, then use the next component only to break a tie. Duration never compensates for an extra damaging report.
 
 Passable reports still contribute to `worstDepth` and `spotIds`, not damaging/caution counts. The exposure list is unique by report traversal, assuming snapshot report IDs remain unique. No independent measured flood probability is calculated.
 
