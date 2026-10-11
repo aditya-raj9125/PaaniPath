@@ -4,11 +4,12 @@ import { escapeHtml, icon, requiredElement } from '@paanipath/ui';
 import { api } from './api.ts';
 import { PilotMap } from './map.ts';
 import { PlacePicker } from './place-picker.ts';
-import { remapDrafts } from './trip.ts';
+import { remapDrafts, emptyTrip, tripReady, journeyTrip, matchesJourney } from './trip.ts';
 import { flushReports, queueReport, queuedReports } from './offline.ts';
 import { preparePhoto } from './photos.ts';
 import { spotsForVehicle, state } from './state.ts';
 import { aboutDialog, planner, reportDialog, routeCard, shell, spotDetail } from './views.ts';
+import { routeHotspots, hotspotSummary } from './hotspots.ts';
 
 let map: PilotMap | undefined;
 let routeController: AbortController | undefined;
@@ -17,7 +18,7 @@ let refreshRunning = false;
 let reportSubmitting = false;
 let lastMinute = Math.floor(Date.now() / 60_000);
 let lastRouteRisk = '';
-const picker = new PlacePicker((index, place) => { state.locations[index] = place; map?.focus(place.coords); void compare(); });
+const picker = new PlacePicker((index, place) => { state.locations[index] = place; void compare(); });
 
 function toast(message: string): void {
   const element = requiredElement<HTMLElement>('#toast');
@@ -32,14 +33,23 @@ function showError(error: unknown): void {
 }
 function renderPlanner(): void { requiredElement('#planner-content').innerHTML = planner(); }
 function activeSpots(): PublicSpot[] { return spotsForVehicle().filter(spot => !spot.cleared && !spot.archived); }
+function visibleHotspots(): ReturnType<typeof routeHotspots> {
+  const selected = state.routes?.routes.find(route => route.id === state.selectedRoute);
+  return routeHotspots(activeSpots(), selected?.geometry);
+}
 function renderMap(): void {
-  const spots = activeSpots();
+  const hotspots = visibleHotspots();
+  const spots = hotspots.flatMap(hotspot => hotspot.spots);
   const routes = state.routes?.routes ?? [];
-  map?.update(spots, routes, state.selectedRoute, state.locations.filter(place => place.name.length > 0), state.selectedSpot);
+  if (!hotspots.some(hotspot => hotspot.id === state.selectedHotspot)) state.selectedHotspot = undefined;
+  if (!hotspots.some(hotspot => hotspot.id === state.expandedHotspot)) state.expandedHotspot = undefined;
+  if (!spots.some(spot => spot.id === state.selectedSpot)) state.selectedSpot = undefined;
+  map?.update(spots, routes, state.selectedRoute, state.locations.filter(place => place.name.length > 0), state.selectedSpot, state.expandedHotspot);
   const recommended = routes.find(route => route.recommended);
-  requiredElement('#map-summary').innerHTML = `<div><span>ON YOUR RADAR</span><strong>${spots.length}<small>active spots</small></strong></div><div><span>FRESH REPORTS</span><strong>${spots.filter(spot => spot.ageMinutes < 60).length}<small>under 60 min</small></strong></div><div><span>YOUR CLEARER ROUTE</span><strong>${recommended?.score.damaging ?? '—'}<small>damaging spots</small></strong></div>`;
+  requiredElement('#map-summary').innerHTML = `<div><span>ROUTE HOTSPOTS</span><strong>${hotspots.length}<small>${routes.length ? 'within 750 m' : 'plan a route first'}</small></strong></div><div><span>VISIBLE CASES</span><strong>${spots.length}<small>in nearby hotspots</small></strong></div><div><span>YOUR CLEARER ROUTE</span><strong>${recommended?.score.damaging ?? '—'}<small>damaging cases</small></strong></div>`;
   const selected = spots.find(spot => spot.id === state.selectedSpot);
-  requiredElement('#spot-detail').innerHTML = selected === undefined ? '' : spotDetail(selected);
+  const hotspot = hotspots.find(candidate => candidate.id === state.selectedHotspot);
+  requiredElement('#spot-detail').innerHTML = selected !== undefined ? spotDetail(selected) : hotspot !== undefined ? hotspotSummary(hotspot, hotspot.id === state.expandedHotspot) : '';
 }
 function renderRoutes(): void {
   const routes = state.routes?.routes ?? [];
@@ -50,30 +60,39 @@ function renderRoutes(): void {
   if (state.routes !== undefined) requiredElement('#routes').insertAdjacentHTML('beforeend', `<p class="dialog-footnote">${escapeHtml(state.routes.warning)}</p>`);
 }
 
-async function compare(fit = true): Promise<void> {
+async function compare(fit = true, explicit = false): Promise<void> {
   picker.close();
-  if (state.locations.some((place, index) => !place.name || (state.drafts[index] !== undefined && state.drafts[index] !== place.name))) {
+  const preset = state.bootstrap?.journeys?.find(journey => journey.id === state.selectedJourney);
+  if (preset !== undefined && !matchesJourney(state.locations, preset)) state.selectedJourney = '';
+  if (!tripReady(state.locations, state.drafts)) {
     routeController?.abort(); state.loading = false; state.routes = undefined;
-    state.error = 'Select a search result or map point for every stop before routing.';
+    state.error = explicit ? 'Select a search result or map point for every stop before routing.' : '';
     renderPlanner(); renderRoutes(); renderMap(); return;
   }
   state.drafts = {};
   routeController?.abort();
   const controller = new AbortController(); routeController = controller;
-  state.loading = true; state.error = ''; renderPlanner();
-  if (state.routes === undefined) renderRoutes();
+  state.loading = true; state.error = ''; state.routes = undefined;
+  renderPlanner(); renderRoutes(); renderMap();
   try {
     const result = await api.routes({ locations: state.locations, profile: state.profile, detourFactor: state.detourFactor, optimizeOrder: state.optimizeOrder }, controller.signal);
     if (controller.signal.aborted) return;
     state.routes = result; state.selectedRoute = 'route-0';
     lastRouteRisk = JSON.stringify(result.spots.map(spot => [spot.id, spot.depth, spot.verdict]));
-    if (fit) map?.fit(result.routes[0]?.geometry ?? state.locations.map(place => place.coords));
+    if (fit) focusTrip(result.routes.flatMap(route => route.geometry));
     renderMap(); renderRoutes();
   } catch (error) {
     if (controller.signal.aborted) return;
     state.error = errorMessage(error); state.routes = undefined; renderRoutes(); renderMap();
   } finally {
     if (!controller.signal.aborted) { state.loading = false; renderPlanner(); }
+  }
+}
+
+function focusTrip(geometry: readonly Coordinates[]): void {
+  map?.fit([...geometry, ...state.locations.map(place => place.coords)]);
+  if (window.matchMedia('(max-width: 760px)').matches) {
+    requiredElement('#map').scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' });
   }
 }
 
@@ -103,6 +122,23 @@ function connection(connected: boolean): void {
 }
 
 function selectSpot(id: string): void { state.selectedSpot = id; renderMap(); }
+function selectHotspot(id: string, expand: boolean): void {
+  const hotspot = visibleHotspots().find(candidate => candidate.id === id);
+  if (hotspot === undefined) { toast('Plan or select a route within 750 m of this hotspot to view it on the map.'); return; }
+  state.selectedHotspot = id; state.selectedSpot = undefined;
+  state.expandedHotspot = expand ? id : undefined;
+  renderMap();
+  if (expand) {
+    map?.fit(hotspot.spots.map(spot => spot.coords));
+  }
+}
+function hotspotClick(button: HTMLButtonElement): boolean {
+  if (button.dataset.openHotspot !== undefined) { selectHotspot(button.dataset.openHotspot, true); return true; }
+  if (button.dataset.closeHotspot !== undefined) {
+    state.expandedHotspot = undefined; state.selectedHotspot = undefined; state.selectedSpot = undefined; renderMap(); return true;
+  }
+  return false;
+}
 function beginReport(): void {
   state.pickStop = undefined;
   state.pickLocation = true; map?.setPicking(true);
@@ -176,7 +212,7 @@ async function action(name: string): Promise<void> {
     case 'cancel-pick': cancelPick(); break;
     case 'close-report': report.close(); break;
     case 'repick': report.close(); beginReport(); break;
-    case 'compare': await compare(); break;
+    case 'compare': await compare(true, true); break;
     case 'close-spot': state.selectedSpot = undefined; renderMap(); break;
     case 'limits': { const editor = requiredElement<HTMLElement>('#limits-editor'); editor.hidden = !editor.hidden; break; }
     case 'add-stop': addStop(); break;
@@ -191,6 +227,7 @@ async function action(name: string): Promise<void> {
 
 function addStop(): void {
   if (state.locations.length >= 4) return;
+  state.selectedJourney = '';
   routeController?.abort(); state.loading = false; state.error = '';
   picker.close();
   const order = state.locations.map((_, index) => index); order.splice(state.locations.length - 1, 0, -1);
@@ -213,6 +250,7 @@ function bindEvents(): void {
   });
   document.addEventListener('change', event => { void handleChange(event).catch(showError); });
   document.addEventListener('input', event => {
+    if (event.target instanceof HTMLInputElement && event.target.dataset.location !== undefined) tripEdited();
     if (event.target instanceof HTMLInputElement && event.target.id === 'detour') requiredElement('#detour-value').textContent = `${event.target.value}× fastest`;
   });
   requiredElement('#report-dialog').addEventListener('submit', event => { if (event instanceof SubmitEvent) void submitReport(event); });
@@ -222,7 +260,36 @@ function bindEvents(): void {
   }
 }
 
+function tripEdited(): void {
+  routeController?.abort(); state.loading = false; state.routes = undefined; state.error = ''; state.selectedJourney = '';
+  const dropdown = document.querySelector<HTMLSelectElement>('#demo-journey');
+  if (dropdown !== null) dropdown.value = '';
+  const description = document.querySelector<HTMLElement>('#journey-description');
+  if (description !== null) description.textContent = '7 direct trips · 3 trips with stops. Live API routes; simulated waterlogging.';
+  const button = document.querySelector<HTMLButtonElement>('[data-action="compare"]');
+  if (button !== null) { button.disabled = false; button.innerHTML = `Find my clearer route ${icon('arrow', 19)}`; }
+  const error = document.querySelector<HTMLElement>('.planner-error');
+  if (error !== null) { error.hidden = true; error.textContent = ''; }
+  renderRoutes(); renderMap();
+}
+
+async function selectJourney(id: string): Promise<void> {
+  const journey = state.bootstrap?.journeys?.find(candidate => candidate.id === id);
+  if (id !== '' && journey === undefined) throw new Error('This demo journey is unavailable. Reload the app.');
+  picker.close(); cancelPick(); routeController?.abort();
+  state.drafts = {}; state.routes = undefined; state.loading = false; state.error = '';
+  state.selectedJourney = id; state.selectedSpot = undefined; state.selectedHotspot = undefined; state.expandedHotspot = undefined;
+  state.locations = journey === undefined ? emptyTrip() : journeyTrip(journey);
+  if (journey === undefined) { renderPlanner(); renderRoutes(); renderMap(); map?.reset(); return; }
+  // Presets were verified with this profile and fixed stop order. Both remain editable.
+  const profile = state.bootstrap?.profiles.find(candidate => candidate.type === 'car');
+  if (profile !== undefined) state.profile = profile;
+  state.detourFactor = 2; state.optimizeOrder = false;
+  await compare();
+}
+
 async function handleClick(button: HTMLButtonElement): Promise<void> {
+  if (hotspotClick(button)) return;
   const data = button.dataset;
   if (data.moveStop !== undefined) {
     const index = Number(data.moveStop); const target = index + Number(data.direction);
@@ -262,6 +329,7 @@ async function handleClick(button: HTMLButtonElement): Promise<void> {
 async function handleChange(event: Event): Promise<void> {
   const input = event.target;
   if (!(input instanceof HTMLInputElement || input instanceof HTMLSelectElement)) return;
+  if (input.id === 'demo-journey') { await selectJourney(input.value); return; }
   if (input.dataset.location !== undefined) {
     return; // The combobox accepts only an explicit selected result, never free text as coordinates.
   }
@@ -284,15 +352,14 @@ async function boot(): Promise<void> {
   document.documentElement.classList.remove('dark');
   localStorage.removeItem('paanipath-theme');
   const bootstrap = await api.bootstrap(); state.bootstrap = bootstrap;
-  const origin = bootstrap.places[0]; const destination = bootstrap.places[1];
-  if (origin === undefined || destination === undefined) throw new Error('Pilot locations are missing.');
-  state.locations = [origin, destination];
+  state.locations = emptyTrip();
   requiredElement('#app').innerHTML = shell();
+  requiredElement('.map-legend').innerHTML = '<span><i class="dot passable"></i> Low density: 1–8</span><span><i class="dot caution"></i> Moderate: 9–13</span><span><i class="dot damage"></i> High: 14+</span><span>Hotspots within 750 m of selected route · intensity counts cases, not depth</span>';
   if (!bootstrap.demoMode) requiredElement('#demo-banner').innerHTML = `${icon('info', 16)} Community reports · ${escapeHtml(bootstrap.graph.metadata.limitations)}`;
   else if (bootstrap.graph.metadata.source === 'openrouteservice') requiredElement('#demo-banner').innerHTML = `${icon('info', 16)} Demo: water depths and reports are simulated. Routes come from OpenRouteService; travel times are estimates.`;
-  if (bootstrap.seededMode) requiredElement('#demo-banner').innerHTML = `${icon('info', 16)} <strong>API road routing · simulated waterlogging.</strong> Seed pins are approximate location examples, not verified road or flood observations. Community reports are labelled separately.`;
-  map = new PilotMap(requiredElement<HTMLElement>('#map'), bootstrap.graph, { selectSpot, selectPoint });
-  bindEvents(); renderPlanner(); renderMap(); await compare();
+  if (bootstrap.seededMode) requiredElement('#demo-banner').innerHTML = `${icon('info', 16)} <strong>500 simulated hotspots · road-snapped cases.</strong> Intensity is case count, not measured flood depth. View a hotspot to reveal cases. Road placement uses provider map data; floods remain simulated.`;
+  map = new PilotMap(requiredElement<HTMLElement>('#map'), bootstrap.graph, { selectSpot, selectPoint, selectHotspot });
+  bindEvents(); renderPlanner(); renderMap(); renderRoutes();
   if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js').catch(() => { /* App remains usable without shell caching. */ });
   window.addEventListener('offline', () => connection(false));
   window.addEventListener('online', () => { void flushReports().then(count => { if (count > 0) toast(`${count} queued reports synced.`); return refresh(); }); });

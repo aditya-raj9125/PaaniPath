@@ -1,5 +1,5 @@
 /* Cache only the shell. Route answers and reports always come from the network. */
-const CACHE = 'paanipath-shell-v6-blue';
+const CACHE = 'paanipath-shell-v9-route-hotspots';
 const SHELL = ['/', '/app.js', '/app.css', '/favicon.svg', '/manifest.webmanifest'];
 self.addEventListener('install', event => {
   event.waitUntil(fetch('/asset-manifest.json').then(response => response.json())

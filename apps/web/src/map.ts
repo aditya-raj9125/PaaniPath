@@ -2,9 +2,11 @@ import type { Coordinates, Place, PublicSpot, MapMetadata, RouteOption } from '@
 import { escapeHtml, icon, requiredElement } from '@paanipath/ui';
 import { fitViewBox, mapBounds, project, unproject, visibleTiles } from './map-geometry.ts';
 import type { ViewBox } from './map-geometry.ts';
+import { groupHotspots, clusterHotspots, hotspotMarker, caseMarker } from './hotspots.ts';
+import type { MapHotspot } from './hotspots.ts';
+import { CameraAnimation } from './map-camera.ts';
 
-const COLORS: Readonly<Record<string, string>> = { damaging: '#174d7d', marginal: '#74a7ce', passable: '#b3d5ef', stale: '#95b5cf', cleared: '#b9d5e9' };
-interface MapCallbacks { readonly selectSpot: (id: string) => void; readonly selectPoint: (coords: Coordinates) => void }
+interface MapCallbacks { readonly selectSpot: (id: string) => void; readonly selectPoint: (coords: Coordinates) => void; readonly selectHotspot: (id: string, expand: boolean) => void }
 
 /** Real street tiles with geographically aligned OSM routing and report overlays. */
 export class PilotMap {
@@ -16,6 +18,11 @@ export class PilotMap {
   private pick = false;
   private roadOverlay = false;
   private readonly tiles = new Map<string, SVGImageElement>();
+  private hotspots: readonly MapHotspot[] = [];
+  private visibleHotspots: readonly MapHotspot[] = [];
+  private selectedSpot: string | undefined;
+  private expandedHotspot: string | undefined;
+  private readonly camera = new CameraAnimation({ request: callback => requestAnimationFrame(callback), cancel: id => cancelAnimationFrame(id) });
 
   constructor(private readonly root: HTMLElement, graph: { readonly metadata: MapMetadata }, private readonly callbacks: MapCallbacks) {
     this.graph = graph;
@@ -26,13 +33,14 @@ export class PilotMap {
       <g id="map-background"></g><g id="map-tiles"></g><g id="map-roads"></g><g id="map-labels"></g><g id="map-routes"></g><g id="map-spots"></g><g id="map-stops"></g><g id="map-picked"></g>
       </svg><div class="map-topline"><div class="map-region">${icon('pin', 15)} Delhi NCR <span>ONLINE ROAD ROUTING</span></div><button class="map-layer" id="street-layer" title="Show the NCR search region; route availability depends on the provider" aria-pressed="false">${icon('layers', 17)} Search region</button></div>
       <div class="map-tools"><button id="zoom-in" aria-label="Zoom in">${icon('plus')}</button><button id="zoom-out" aria-label="Zoom out">−</button><span></span><button id="map-reset" aria-label="Fit NCR search region">${icon('locate')}</button></div>
+      <div class="hotspot-tooltip" role="status" hidden></div>
       <div class="map-tile-status" role="status" hidden>Street tiles could not load. Check your internet connection; route overlays come from the directions API.</div>
       <div class="map-attribution"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors</a> · <a href="https://openrouteservice.org/" target="_blank" rel="noopener noreferrer">Routing: openrouteservice</a> · <a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noopener noreferrer">Report a map issue</a></div>`;
     this.svg = requiredElement<SVGSVGElement>('svg.pilot-map', root);
     this.drawBase();
     this.bind();
     this.renderTiles();
-    new ResizeObserver(() => this.renderTiles()).observe(this.svg);
+    new ResizeObserver(() => { this.drawHotspots(); this.scaleMarkers(); this.renderTiles(); }).observe(this.svg);
   }
 
   project(coords: Coordinates): readonly [number, number] {
@@ -52,7 +60,7 @@ export class PilotMap {
     requiredElement<SVGElement>('#map-roads', this.root).style.display = 'none';
   }
 
-  update(spots: readonly PublicSpot[], routes: readonly RouteOption[], selectedRoute: string, locations: readonly Place[], selectedSpot?: string): void {
+  update(spots: readonly PublicSpot[], routes: readonly RouteOption[], selectedRoute: string, locations: readonly Place[], selectedSpot?: string, expandedHotspot?: string): void {
     const sorted = [...routes].sort((a, b) => Number(a.id === selectedRoute) - Number(b.id === selectedRoute));
     this.layer('map-routes', sorted.map(route => {
       const points = route.geometry.map(coords => this.project(coords).join(',')).join(' ');
@@ -60,19 +68,23 @@ export class PilotMap {
       return `<polyline points="${points}" fill="none" stroke="white" stroke-width="${active ? 10 : 7}" stroke-linejoin="round" stroke-linecap="round" opacity="${active ? 1 : .55}"/>
         <polyline points="${points}" fill="none" stroke="${active ? '#1768a6' : '#86b5d7'}" stroke-width="${active ? 5 : 3}" stroke-linejoin="round" stroke-linecap="round" ${active ? '' : 'stroke-dasharray="8 6"'} opacity="${active ? 1 : .65}"/>`;
     }).join(''));
-    this.layer('map-spots', spots.filter(spot => !spot.cleared).map(spot => {
-      const [x, y] = this.project(spot.coords);
-      const color = COLORS[spot.verdict];
-      return `<g class="map-spot ${spot.id === selectedSpot ? 'selected' : ''}" data-spot="${escapeHtml(spot.id)}" transform="translate(${x},${y})" role="button" tabindex="0" aria-label="${escapeHtml(`${spot.name}, depth ${spot.depth}, ${spot.verdict}, ${spot.ageMinutes} minutes old`)}">
-        <title>${escapeHtml(spot.name)} · ${spot.verdict} · ${spot.ageMinutes} min ago</title>
-        <circle r="${spot.id === selectedSpot ? 24 : 19}" fill="${color}" opacity=".20"/><circle r="9" fill="${color}" stroke="#fff" stroke-width="2.5" filter="url(#marker-shadow)"/>
-        <text y="3.5" text-anchor="middle" fill="${spot.verdict === 'damaging' ? 'white' : '#15334b'}" font-size="10" font-weight="700">${spot.depth}</text></g>`;
-    }).join(''));
+    this.hotspots = groupHotspots(spots);
+    this.selectedSpot = selectedSpot; this.expandedHotspot = expandedHotspot;
+    this.drawHotspots();
     this.layer('map-stops', locations.map((place, index) => {
       const [x, y] = this.project(place.coords);
       return `<g transform="translate(${x},${y})"><circle r="15" fill="white" stroke="#1768a6" stroke-width="2.5"/><text y="4.5" text-anchor="middle" fill="#1768a6" font-size="12" font-weight="800">${String.fromCharCode(65 + index)}</text></g>`;
     }).join(''));
     this.scaleMarkers();
+  }
+
+  private drawHotspots(): void {
+    const width = this.svg.getBoundingClientRect().width;
+    this.visibleHotspots = clusterHotspots(this.hotspots.filter(hotspot => hotspot.id !== this.expandedHotspot), coords => this.project(coords), width / (this.box[2] ?? 1000));
+    const expanded = this.hotspots.find(hotspot => hotspot.id === this.expandedHotspot);
+    const cases = expanded?.spots.map(spot => caseMarker(spot, this.project(spot.coords), spot.id === this.selectedSpot)).join('') ?? '';
+    this.layer('map-spots', this.visibleHotspots.map(hotspot => hotspotMarker(hotspot, this.project(hotspot.coords))).join('') + cases);
+    requiredElement<HTMLElement>('.hotspot-tooltip', this.root).hidden = true;
   }
 
   setPicking(enabled: boolean): void { this.pick = enabled; this.root.classList.toggle('picking', enabled); }
@@ -82,12 +94,17 @@ export class PilotMap {
     this.scaleMarkers();
   }
   focus(coords: Coordinates): void { this.fit([coords]); }
-  reset(): void { this.box = [0, 0, 1000, 760]; this.setBox(); }
+  reset(): void { this.fly([0, 0, 1000, 760]); }
   fit(coords: readonly Coordinates[]): void {
     const box = fitViewBox(coords, this.bbox);
     if (box === undefined) return;
-    this.box = [...box];
-    this.setBox();
+    this.fly(box);
+  }
+  private fly(to: ViewBox): void {
+    const [x = 0, y = 0, width = 1000, height = 760] = this.box;
+    this.camera.fly([x, y, width, height], to, (box, refresh) => {
+      this.box = [...box]; this.setBox(refresh);
+    }, window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   }
   private scaleMarkers(): void {
     const scale = (this.box[2] ?? 1000) / 1000;
@@ -96,8 +113,14 @@ export class PilotMap {
       marker.setAttribute('transform', `${translation} scale(${scale})`);
     });
   }
-  private setBox(): void { this.svg.setAttribute('viewBox', this.box.join(' ')); this.scaleMarkers(); this.renderTiles(); }
+  private setBox(refresh = true): void {
+    this.svg.setAttribute('viewBox', this.box.join(' '));
+    if (refresh) this.drawHotspots();
+    this.scaleMarkers();
+    if (refresh) this.renderTiles();
+  }
   private zoom(factor: number): void {
+    this.camera.cancel();
     const [x = 0, y = 0, w = 1000, h = 760] = this.box;
     const width = Math.max(.5, Math.min(1800, w * factor));
     const height = width * 0.76;
@@ -115,7 +138,8 @@ export class PilotMap {
     });
     this.svg.addEventListener('wheel', event => { event.preventDefault(); this.zoom(event.deltaY > 0 ? 1.1 : 0.9); }, { passive: false });
     this.svg.addEventListener('pointerdown', event => {
-      if (event.button !== 0 || (event.target instanceof Element && event.target.closest('[data-spot]'))) return;
+      if (event.button !== 0 || (event.target instanceof Element && event.target.closest('[data-spot], [data-hotspot]'))) return;
+      this.camera.cancel();
       this.drag = { x: event.clientX, y: event.clientY, box: [...this.box], moved: false };
       this.svg.setPointerCapture(event.pointerId);
     });
@@ -131,15 +155,40 @@ export class PilotMap {
     });
     this.svg.addEventListener('pointerup', event => this.pointerUp(event));
     this.svg.addEventListener('pointercancel', () => { this.drag = undefined; });
-    this.svg.addEventListener('click', event => {
-      const id = event.target instanceof Element ? event.target.closest('[data-spot]')?.getAttribute('data-spot') : null;
-      if (id) this.callbacks.selectSpot(id);
-    });
+    this.svg.addEventListener('click', event => this.activateMarker(event.target));
     this.svg.addEventListener('keydown', event => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
-      const id = event.target instanceof Element ? event.target.closest('[data-spot]')?.getAttribute('data-spot') : null;
-      if (id) { event.preventDefault(); this.callbacks.selectSpot(id); }
+      event.preventDefault(); this.activateMarker(event.target);
     });
+    this.svg.addEventListener('pointerover', event => this.showHotspot(event.target));
+    this.svg.addEventListener('focusin', event => this.showHotspot(event.target));
+    this.root.addEventListener('click', event => {
+      const id = event.target instanceof Element ? event.target.closest('[data-zoom-hotspots]')?.getAttribute('data-zoom-hotspots') : null;
+      if (id) this.activateHotspot(id);
+    });
+    this.root.addEventListener('pointerleave', () => { requiredElement<HTMLElement>('.hotspot-tooltip', this.root).hidden = true; });
+  }
+
+  private activateMarker(target: EventTarget | null): void {
+    if (!(target instanceof Element)) return;
+    const spot = target.closest('[data-spot]')?.getAttribute('data-spot');
+    const hotspot = target.closest('[data-hotspot]')?.getAttribute('data-hotspot');
+    if (spot) this.callbacks.selectSpot(spot);
+    if (hotspot) this.activateHotspot(hotspot);
+  }
+  private activateHotspot(id: string): void {
+    const hotspot = this.visibleHotspots.find(candidate => candidate.id === id);
+    if (hotspot?.members) this.fit(hotspot.members.map(member => member.coords));
+    else this.callbacks.selectHotspot(id, false);
+  }
+  private showHotspot(target: EventTarget | null): void {
+    if (!(target instanceof Element)) return;
+    const id = target.closest('[data-hotspot]')?.getAttribute('data-hotspot');
+    const hotspot = this.visibleHotspots.find(candidate => candidate.id === id);
+    if (hotspot === undefined) return;
+    const tooltip = requiredElement<HTMLElement>('.hotspot-tooltip', this.root);
+    tooltip.innerHTML = `<strong>${hotspot.spots.length} cases</strong><span>${escapeHtml(hotspot.name)}</span><button ${hotspot.members ? 'data-zoom-hotspots' : 'data-open-hotspot'}="${escapeHtml(hotspot.id)}">${hotspot.members ? 'Zoom to view hotspots' : 'View cases'}</button>`;
+    tooltip.hidden = false;
   }
 
   private pointerUp(event: PointerEvent): void {

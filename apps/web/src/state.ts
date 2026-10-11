@@ -8,7 +8,10 @@ export interface AppState {
   drafts: Record<number, string>;
   routes: RouteResponse | undefined;
   selectedRoute: string;
+  selectedJourney: string;
   selectedSpot: string | undefined;
+  selectedHotspot: string | undefined;
+  expandedHotspot: string | undefined;
   detourFactor: number;
   optimizeOrder: boolean;
   loading: boolean;
@@ -22,7 +25,7 @@ export interface AppState {
   filter: 'all' | 'damaging' | 'stale';
 }
 export const state: AppState = { bootstrap: undefined, profile: PROFILES[1] ?? { type: 'motorbike', name: 'Motorbike', marginal: 2, damaging: 3 },
-  locations: [], drafts: {}, routes: undefined, selectedRoute: 'route-0', selectedSpot: undefined, detourFactor: 2, optimizeOrder: true,
+  locations: [], drafts: {}, routes: undefined, selectedRoute: 'route-0', selectedJourney: '', selectedSpot: undefined, selectedHotspot: undefined, expandedHotspot: undefined, detourFactor: 2, optimizeOrder: true,
   loading: false, error: '', view: 'planner', pickLocation: false, pickStop: undefined, pickedCoords: undefined, reportDepth: 2, reportPhoto: undefined, filter: 'all' };
 
 export function spotsForVehicle(): PublicSpot[] {

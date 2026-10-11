@@ -31,7 +31,12 @@ try {
   assert.equal(response.status, 200); const bootstrap = await response.json();
   assert.equal(bootstrap.demoMode, true); assert.equal(bootstrap.seededMode, true);
   assert.equal(bootstrap.graph.nodes, undefined); assert.equal(bootstrap.coverage.nodes, 0); assert.equal(bootstrap.graph.metadata.source, 'openrouteservice');
-  assert(bootstrap.spots.length > 100);
+  assert.equal(bootstrap.spots.length, 6505);
+  assert.equal(new Set(bootstrap.spots.map(spot => spot.hotspot.id)).size, 500);
+  assert(bootstrap.spots.every(spot => spot.roadPlacement.snapped));
+  assert.equal(bootstrap.journeys.length, 10);
+  assert.deepEqual(bootstrap.journeys.map(journey => journey.locations.length), [2, 2, 2, 2, 2, 2, 2, 3, 3, 4]);
+  assert.equal(providerCalls, 0, 'Bootstrap does not eagerly request any demo routes.');
   const headers = { 'content-type': 'application/json', 'x-paanipath': '1' };
   for (const query of ['Noida', 'Greater Noida', 'Gurgaon', 'Ghaziabad']) {
     const response = await fetch(`${base}/api/places/search`, { method: 'POST', headers, body: JSON.stringify({ query, online: false }) });
@@ -45,6 +50,14 @@ try {
     assert.equal(result.stats.ordersEvaluated, count === 4 ? 2 : 1);
   }
   assert(providerCalls > 0);
+  for (const journey of [bootstrap.journeys[1], bootstrap.journeys[9]]) {
+    const response = await fetch(`${base}/api/routes`, { method: 'POST', headers,
+      body: JSON.stringify({ locations: journey.locations, profile: bootstrap.profiles.find(profile => profile.type === 'car'), detourFactor: 2, optimizeOrder: false }) });
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.stats.ordersEvaluated, 1);
+    assert.deepEqual(result.routes[0].order, journey.locations.map((_, index) => index));
+  }
   providerStatus = 429;
   const quota = await fetch(`${base}/api/routes`, { method: 'POST', headers,
     body: JSON.stringify({ locations: bootstrap.places.slice(1, 3), profile: bootstrap.profiles[1], detourFactor: 1.7 }) });
@@ -53,7 +66,12 @@ try {
   const malformed = await fetch(`${base}/api/places/search`, { method: 'POST', headers, body: JSON.stringify({ query: '' }) });
   assert.equal(malformed.status, 400);
   const page = await fetch(base); assert.equal(page.headers.get('referrer-policy'), 'strict-origin-when-cross-origin');
-  console.log('HTTP integration passed: lightweight bootstrap, 100+ labelled fixture seeds, NCR search, 2/3/4 stops, API provider dispatch, validation and tile referrers. Mocked provider only; not live-NCR acceptance.');
+  for (const module of ['index', 'geometry', 'spatial']) {
+    const response = await fetch(`${base}/modules/packages/routing/src/${module}.js`);
+    assert.equal(response.status, 200, 'Shared corridor geometry is available to the browser.');
+    assert((await response.text()).includes('export'));
+  }
+  console.log('HTTP integration passed: 500 hotspots / 6505 cases, ten journey presets, no eager routing, NCR search, 2/3/4 stops and fixed-order presets, API dispatch, validation and tile referrers. Mocked provider only; not live-NCR acceptance.');
 } finally {
   if (server) await new Promise(resolve => server.close(resolve));
   if (application) application.service.store.close();

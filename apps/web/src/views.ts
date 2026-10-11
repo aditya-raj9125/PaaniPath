@@ -2,6 +2,7 @@ import { DEPTHS, SAFETY_WARNING } from '@paanipath/domain';
 import type { PublicSpot, RouteOption } from '@paanipath/domain';
 import { escapeHtml as esc, icon, kilometres, minutes } from '@paanipath/ui';
 import { spotsForVehicle, state } from './state.ts';
+import { groupHotspots, densityStyle } from './hotspots.ts';
 
 export function shell(): string {
   return `<aside class="rail"><a class="brand-mark" href="/" aria-label="PaaniPath home">${icon('drop', 27)}</a><div class="rail-line"></div>
@@ -26,7 +27,7 @@ export function planner(): string {
   if (state.view === 'reports') return reportsList();
   const rows = state.locations.map((place, i) => `<div class="stop-row"><span class="stop-letter ${i === 0 ? 'origin' : ''}">${String.fromCharCode(65 + i)}</span><div class="stop-input"><label for="stop-${i}">${i === 0 ? 'START FROM' : i === state.locations.length - 1 ? 'DESTINATION' : `STOP ${i}`}</label><input id="stop-${i}" data-location="${i}" value="${esc(state.drafts[i] ?? place.name)}" placeholder="Search NCR places or addresses" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="results-${i}" /><div class="place-results" id="results-${i}" role="listbox" aria-label="Location suggestions" hidden></div></div><div class="stop-order"><button data-move-stop="${i}" data-direction="-1" aria-label="Move stop ${String.fromCharCode(65 + i)} up" ${i === 0 ? 'disabled' : ''}>↑</button><button data-move-stop="${i}" data-direction="1" aria-label="Move stop ${String.fromCharCode(65 + i)} down" ${i === state.locations.length - 1 ? 'disabled' : ''}>↓</button>${i > 0 && i < state.locations.length - 1 ? `<button class="icon-button" data-remove-stop="${i}" aria-label="Remove stop ${i}">${icon('close', 15)}</button>` : ''}</div></div>`).join('');
   return `<div class="panel-heading"><span class="eyebrow">LET’S GET YOU THERE</span><span class="panel-index">01 / PLAN</span></div><h2>Your trip.<br>Your way.</h2>
-    <div class="trip-stops">${rows}</div><p class="search-privacy">Search across Delhi, Noida, Greater Noida, Gurugram, Ghaziabad and the wider NCR. Typed searches are sent to Photon after a pause.</p>
+    ${journeyPicker()}<div class="trip-stops">${rows}</div><p class="search-privacy">Search across Delhi, Noida, Greater Noida, Gurugram, Ghaziabad and the wider NCR. Typed searches are sent to Photon after a pause.</p>
     <div class="trip-actions" aria-label="Select trip stops on the real street map">${state.locations.map((_, index) => `<button data-pick-stop="${index}" aria-label="Set stop ${String.fromCharCode(65 + index)} on the map">${icon('pin', 14)} Pick ${String.fromCharCode(65 + index)} on map</button>`).join('')}</div>
     <div class="trip-actions"><button data-action="add-stop" ${state.locations.length >= 4 ? 'disabled' : ''}>${icon('plus', 14)} Add a stop</button><button data-action="reverse-trip">${icon('route', 14)} Reverse</button><button data-action="use-location" aria-label="Use current location as origin">${icon('locate', 14)} My location</button></div>
     <div class="panel-rule"></div><div class="field-heading"><label>Your vehicle</label><button data-action="limits">Edit limits ${icon('settings', 14)}</button></div>
@@ -39,10 +40,18 @@ export function planner(): string {
     <p class="planner-error" role="alert" ${state.error ? '' : 'hidden'}>${esc(state.error)}</p><p class="planner-footnote">We prioritize fewer damaging spots.<br>Then caution, depth, and travel time.</p>`;
 }
 
+function journeyPicker(): string {
+  const journeys = state.bootstrap?.journeys ?? [];
+  if (journeys.length === 0) return '';
+  const selected = journeys.find(journey => journey.id === state.selectedJourney);
+  return `<div class="journey-picker"><label for="demo-journey">EXPLORE A DEMO JOURNEY</label><select id="demo-journey" aria-describedby="journey-description"><option value="">Plan your own trip</option>${journeys.map((journey, index) => `<option value="${esc(journey.id)}" ${journey.id === state.selectedJourney ? 'selected' : ''}>Journey ${index + 1} — ${esc(journey.title)}</option>`).join('')}</select><p id="journey-description">${selected ? `${esc(selected.title)} · ${selected.locations.length - 2} intermediate stops. Editable car trip, 2× detour allowance.` : '7 direct trips · 3 trips with stops. Live API routes; simulated waterlogging.'}</p></div>`;
+}
+
 function reportsList(): string {
   const active = spotsForVehicle().filter(spot => !spot.cleared && !spot.archived && (state.filter === 'all' || spot.verdict === state.filter));
+  const hotspots = groupHotspots(active).sort((a, b) => b.spots.length - a.spots.length);
   return `<div class="panel-heading"><span class="eyebrow">ON THE GROUND</span><span class="panel-index">02 / REPORTS</span></div><h2>Local eyes.<br>Better decisions.</h2><p class="report-intro">Every report carries its source, age and confidence. Help the next person on the road.</p><div class="report-filters">${(['all', 'damaging', 'stale'] as const).map(filter => `<button data-filter="${filter}" class="${state.filter === filter ? 'active' : ''}">${filter === 'all' ? 'All spots' : filter === 'damaging' ? 'Damaging' : 'Stale'}</button>`).join('')}</div>
-    <div class="report-list">${active.length ? active.map(spot => `<button class="report-item" data-spot-id="${esc(spot.id)}"><span class="report-depth ${spot.verdict}">${spot.depth}</span><span><strong>${esc(spot.name)}</strong><small>${spot.ageMinutes} min ago · ${spot.confidence}% confidence</small><small>${esc(spot.sourceLabel)}</small></span>${icon('chevron', 14)}</button>`).join('') : '<div class="empty-reports">No reports match this filter.</div>'}</div><button class="compare-button" data-action="report">${icon('plus', 17)} Add a report</button>`;
+    <div class="report-list">${hotspots.length ? hotspots.map(hotspot => `<button class="report-item" data-open-hotspot="${esc(hotspot.id)}"><span class="report-depth">${hotspot.spots.length}</span><span><strong>${esc(hotspot.name)}</strong><small>${densityStyle(hotspot.spots.length).label} case density · ${hotspot.spots.length} cases</small><small>View cases on the map</small></span>${icon('chevron', 14)}</button>`).join('') : '<div class="empty-reports">No hotspots match this filter.</div>'}</div><button class="compare-button" data-action="report">${icon('plus', 17)} Add a report</button>`;
 }
 
 export function routeCard(route: RouteOption, index: number): string {
@@ -59,6 +68,7 @@ export function routeCard(route: RouteOption, index: number): string {
 
 export function spotDetail(spot: PublicSpot): string {
   return `<div class="spot-popover"><div class="spot-popover-top"><span class="depth-tag ${spot.verdict}">LEVEL ${spot.depth} · ${spot.verdict.toUpperCase()}</span><button class="icon-button" data-action="close-spot" aria-label="Close spot details">${icon('close', 16)}</button></div><h3>${esc(spot.name)}</h3><p>${DEPTHS.find(depth => depth.level === spot.depth)?.landmark ?? ''}</p><div class="spot-trust"><span>${icon('clock', 14)} ${spot.ageMinutes} min ago</span><span>${spot.confidence}% confidence</span></div><div class="confidence-bar"><i style="width:${spot.confidence}%"></i></div><div class="spot-source">${esc(spot.sourceLabel)} · ${spot.confirms} confirms / ${spot.dismisses} cleared votes</div>${spot.evidence ? `<div class="seed-evidence"><strong>Historical location reference · simulated scenario</strong><p><a href="${esc(spot.evidence.url)}" target="_blank" rel="noopener noreferrer">${esc(spot.evidence.title)}</a> · ${esc(spot.evidence.publishedAt)}</p><p>Approximate pin. Depth and freshness are simulated, not a live flood report.</p></div>` : ''}${spot.photoId ? `<img class="spot-photo" src="/api/photos/${esc(spot.photoId)}" alt="Photo attached by the reporter" loading="lazy"/>` : ''}
+    ${spot.roadPlacement ? `<div class="seed-evidence"><strong>Provider-snapped road position</strong><p>OpenRouteService driving-car network · graph ${esc(spot.roadPlacement.graphDate)}. Water depth and freshness are simulated, not a live flood report. Map data can still differ from current street conditions.</p></div>` : ''}
     ${spot.verdict === 'stale' ? '<div class="stale-note">Unconfirmed for over 60 min. Counted as caution, not damaging. This does not mean the road is clear.</div>' : ''}
     <div class="spot-votes"><button data-vote="confirm" data-vote-id="${esc(spot.id)}">${icon('drop', 15)} Still flooded</button><button data-vote="dismiss" data-vote-id="${esc(spot.id)}">${icon('check', 15)} Looks cleared</button></div><small>Cleared status requires at least 2 independent dismissals, exceeding confirmations.${state.bootstrap?.demoMode && spot.source === 'seeded' ? ' Demo seed: nearby check bypassed.' : ' Nearby location required.'}</small></div>`;
 }

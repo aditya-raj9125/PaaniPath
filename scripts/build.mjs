@@ -38,7 +38,7 @@ export async function buildProject() {
   await rm(generated, { recursive: true, force: true });
   const count = await compileTree(['apps', 'packages'], 'dist/modules');
   await mkdir('dist/web', { recursive: true });
-  for (const directory of ['apps/web', 'packages/domain', 'packages/ui']) {
+  for (const directory of ['apps/web', 'packages/domain', 'packages/ui', 'packages/routing']) {
     await mkdir(`dist/web/modules/${directory}`, { recursive: true });
     await cp(`dist/modules/${directory}`, `dist/web/modules/${directory}`, { recursive: true });
   }
