@@ -52,6 +52,28 @@ test('detour budget rejects a safer candidate outside the allowance', async () =
   assert.equal(result.routes.length, 1); assert.equal(result.routes[0]?.score.damaging, 1);
   assert(result.routes.every(route => route.withinDetour));
 });
+
+test('avoidance uses a baseline corridor, but off-corridor detour hazards still count in ranking', async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const api = new ApiRouting('secret', undefined, async (_url, init) => {
+    bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+    return bodies.length === 1 ? response() : response([[77.21, 28.65], [77.23, 28.65]], 150);
+  });
+  const reports = [spot('baseline'), spot('outside', 4, { coords: [28.65, 77.22] })];
+  const result = await api.plan(request(), reports, NOW, 1);
+  const polygons = (bodies[1]?.options as Record<string, unknown>).avoid_polygons as Record<string, unknown>;
+  assert.equal((polygons.coordinates as unknown[]).length, 1);
+  assert(result.routes.some(route => route.spotIds.includes('spot-outside') && route.score.damaging === 1));
+  assert(result.routes[0]?.fastest); assert.equal(result.spots.length, 2);
+  assert(result.warning.includes('within 2 km'));
+});
+
+test('far-away reports do not trigger unnecessary avoidance API calls', async () => {
+  let calls = 0;
+  const api = new ApiRouting('secret', undefined, async () => { calls++; return response(); });
+  const result = await api.plan(request(), [spot('far', 3, { coords: [28.9, 77.6] })], NOW, 1);
+  assert.equal(calls, 1); assert.equal(result.routes[0]?.spotIds.length, 0); assert.equal(result.spots.length, 1);
+});
 test('cleared and archived reports are excluded; stale observations remain caution', async () => {
   let calls = 0;
   const api = new ApiRouting('secret', undefined, async () => { calls++; return response(); });

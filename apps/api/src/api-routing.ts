@@ -1,6 +1,6 @@
 import { AppError, assert, publicSpot, SAFETY_WARNING } from '@paanipath/domain';
 import type { Coordinates, PublicSpot, RouteOption, RouteRequest, RouteResponse, Spot } from '@paanipath/domain';
-import { distanceMetres, distanceToSegment } from '@paanipath/routing';
+import { distanceMetres, distanceToSegment, PointIndex } from '@paanipath/routing';
 
 export interface RoutingExecutor {
   plan(request: RouteRequest, spots: readonly Spot[], now: number, revision: number): Promise<RouteResponse>;
@@ -33,11 +33,14 @@ function parseRoute(raw: unknown, order: readonly number[]): RouteOption {
     score: { damaging: 0, marginal: 0, worstDepth: 0, seconds: positive(summary.duration) },
     recommended: false, fastest: false, extraSeconds: 0, withinDetour: true };
 }
-function exposed(route: RouteOption, spots: readonly PublicSpot[]): RouteOption {
-  const hits = spots.filter(spot => route.geometry.some((point, i) => {
-    const next = route.geometry[i + 1];
-    return next !== undefined && distanceToSegment(spot.coords, point, next) <= 85;
-  }));
+function exposed(route: RouteOption, spots: readonly PublicSpot[], index = new PointIndex(spots)): RouteOption {
+  const ids = new Set<string>();
+  for (let i = 0; i < route.geometry.length - 1; i++) {
+    const a = route.geometry[i]; const b = route.geometry[i + 1];
+    if (a === undefined || b === undefined) continue;
+    for (const spot of index.nearSegment(a, b, 85)) if (!ids.has(spot.id) && distanceToSegment(spot.coords, a, b) <= 85) ids.add(spot.id);
+  }
+  const hits = spots.filter(spot => ids.has(spot.id));
   return { ...route, spotIds: hits.map(spot => spot.id), score: { ...route.score,
     damaging: hits.filter(spot => spot.verdict === 'damaging').length,
     marginal: hits.filter(spot => spot.verdict === 'marginal' || spot.verdict === 'stale').length,
@@ -45,6 +48,21 @@ function exposed(route: RouteOption, spots: readonly PublicSpot[]): RouteOption 
 }
 function compare(a: RouteOption, b: RouteOption): number {
   return a.score.damaging - b.score.damaging || a.score.marginal - b.score.marginal || a.score.worstDepth - b.score.worstDepth || a.score.seconds - b.score.seconds;
+}
+
+/** Candidate-generation scope, not a safety boundary: all reports still participate in scoring. */
+function corridorAvoidance(baselines: readonly RouteOption[], spots: readonly PublicSpot[]): readonly PublicSpot[] {
+  const risks = spots.filter(spot => spot.verdict === 'damaging' || spot.verdict === 'marginal' || spot.verdict === 'stale');
+  const index = new PointIndex(risks);
+  const ids = new Set<string>();
+  for (const route of baselines) for (let i = 1; i < route.geometry.length; i++) {
+    const a = route.geometry[i - 1]; const b = route.geometry[i];
+    if (a === undefined || b === undefined) continue;
+    for (const spot of index.nearSegment(a, b, 2000)) {
+      if (!ids.has(spot.id) && distanceToSegment(spot.coords, a, b) <= 2000) ids.add(spot.id);
+    }
+  }
+  return risks.filter(spot => ids.has(spot.id));
 }
 /** Approximate 60 m half-width buffers. They are not surveyed flood boundaries. */
 export function avoidancePolygons(spots: readonly PublicSpot[]): Json {
@@ -119,18 +137,19 @@ export class ApiRouting implements RoutingExecutor {
     if (request.optimizeOrder && request.locations.length === 4) orders.push([0, 2, 1, 3]);
     const baselines = await Promise.all(orders.map(order => this.directions(request, order, [])));
     const fastest = baselines.reduce((a, b) => a.score.seconds <= b.score.seconds ? a : b);
-    const avoid = spots.filter(spot => spot.verdict === 'damaging' || spot.verdict === 'marginal' || spot.verdict === 'stale');
+    const avoid = corridorAvoidance(baselines, spots);
     let unavailable = false;
     const detours = avoid.length === 0 ? [] : await Promise.all(orders.map(async order => {
       try { return await this.directions(request, order, avoid); }
       catch (error) { if (error instanceof AppError && error.code === 'NO_ROUTE') { unavailable = true; return undefined; } throw error; }
     }));
     const budget = fastest.score.seconds * request.detourFactor;
+    const index = new PointIndex(spots);
     const candidates = [...baselines, ...detours.filter((route): route is RouteOption => route !== undefined)]
-      .filter(route => route.score.seconds <= budget + .001).map(route => exposed(route, spots)).sort(compare);
+      .filter(route => route.score.seconds <= budget + .001).map(route => exposed(route, spots, index)).sort(compare);
     const unique = candidates.filter((route, i) => candidates.findIndex(other => JSON.stringify(other.geometry) === JSON.stringify(route.geometry)) === i);
     const selected = unique.slice(0, 2);
-    if (!selected.some(route => route === fastest || JSON.stringify(route.geometry) === JSON.stringify(fastest.geometry))) selected.push(exposed(fastest, spots));
+    if (!selected.some(route => route === fastest || JSON.stringify(route.geometry) === JSON.stringify(fastest.geometry))) selected.push(exposed(fastest, spots, index));
     const routes = selected.map((route, i) => ({ ...route, id: `route-${i}`, recommended: i === 0,
       fastest: route.score.seconds === fastest.score.seconds && JSON.stringify(route.geometry) === JSON.stringify(fastest.geometry),
       extraSeconds: Math.max(0, route.score.seconds - fastest.score.seconds), withinDetour: route.score.seconds <= budget + .001 }));
@@ -138,7 +157,7 @@ export class ApiRouting implements RoutingExecutor {
       stats: { expanded: 0, pruned: 0, labels: candidates.length, durationMs: Math.round(performance.now() - started), optimal: false,
         bounded: true, ordersEvaluated: orders.length, algorithm: 'OpenRouteService directions + flood buffers + candidate exposure ranking' },
       reason: `Best returned candidate within ${request.detourFactor}× the provider baseline; not a globally optimal or guaranteed-safe route.`,
-      warning: `${SAFETY_WARNING} Flood buffers and proximity scoring are approximate. ${unavailable ? 'A flood-avoiding route was unavailable; baseline routes remain visible. ' : ''}` +
+      warning: `${SAFETY_WARNING} Flood buffers and proximity scoring are approximate. Avoidance requests cover reports within 2 km of baseline routes; all returned routes are scored against all reports. ${unavailable ? 'A flood-avoiding route was unavailable; baseline routes remain visible. ' : ''}` +
         'Car road-access rules approximate scooter, motorbike and auto routing; bus uses the HGV bus profile. Stops and avoidance areas are sent to OpenRouteService. Travel times are estimates, not live traffic.' };
   }
 }
