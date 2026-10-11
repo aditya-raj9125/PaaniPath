@@ -122,13 +122,16 @@ Source: [geometry.ts](../packages/routing/src/geometry.ts).
 
 **Point-to-segment:** translate a short route segment relative to the report, scale longitude by `cos(reportLatitude)`, and use a local tangent-plane approximation. For vectors `a`, `b`, `d=b-a`:
 
+For a **zero-length segment** (`d · d = 0`), set **t = 0**. Otherwise, clamp the projection with minimum/maximum operations:
+
 ```math
-t = \begin{cases}
-0 & \text{if } d\cdot d = 0 \\
-\operatorname{clamp}\!\left(-\frac{a\cdot d}{d\cdot d},0,1\right) & \text{otherwise}
-\end{cases}
-\qquad
-\operatorname{distance} = \lVert a+td\rVert\,\frac{\pi}{180}\,R
+t = \max\left(0,\min\left(1,-\frac{a\cdot d}{d\cdot d}\right)\right)
+```
+
+The distance **D**, in metres, is:
+
+```math
+D = \sqrt{(a_x+t d_x)^2+(a_y+t d_y)^2}\,\frac{\pi}{180}\,R
 ```
 
 **Interpretation:** project the report onto the segment, clamp the projection to its endpoints, then convert the scaled angular distance to metres. **R** is the Earth radius stated above.

@@ -28,6 +28,7 @@ function anchors(text) {
 }
 let links = 0;
 let diagrams = 0;
+let equations = 0;
 for (const [file, text] of content) {
   anchors(text);
   // Conservative authoring guard, not a full Mermaid parser: raw semicolons
@@ -36,6 +37,13 @@ for (const [file, text] of content) {
   for (const match of text.matchAll(diagramPattern)) {
     assert(!match[1].includes(';'), `Use commas/words instead of raw semicolons in Mermaid text: ${relative(root, file)}`);
     diagrams++;
+  }
+  // Conservative compatibility guard, not a complete math renderer.
+  const mathPattern = new RegExp(`${marker}math\\r?\\n([\\s\\S]*?)${marker}`, 'g');
+  for (const match of text.matchAll(mathPattern)) {
+    assert(!/\\(?:operatorname|newcommand|renewcommand|def)\b/.test(match[1]),
+      `Use basic math notation instead of restricted macros: ${relative(root, file)}`);
+    equations++;
   }
   for (const match of text.matchAll(/\]\(([^\s)]+)\)/g)) {
     const link = match[1];
@@ -51,4 +59,4 @@ for (const [file, text] of content) {
     links++;
   }
 }
-console.log(`Documentation passed: README, four public docs, ${links} local links and heading targets; ${diagrams} Mermaid text guards passed (not full rendering validation).`);
+console.log(`Documentation passed: README, four public docs, ${links} local links and heading targets; ${diagrams} Mermaid and ${equations} math compatibility guards passed (not full rendering validation).`);
